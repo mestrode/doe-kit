@@ -1,9 +1,10 @@
-# slhs
+# plhs
 
-Pooled Latin Hypercube Sampling. The Rust crate is published as [`plhs` on
-crates.io](https://crates.io/crates/plhs); the binary is called `slhs`.
+Pooled Latin Hypercube Sampling. The Rust crate and the command-line
+binary are both named `plhs`, published on
+[crates.io](https://crates.io/crates/plhs).
 
-`slhs` augments a pool of existing experiment designs with new designs that
+`plhs` augments a pool of existing experiment designs with new designs that
 preserve the Latin Hypercube property inside a per-parameter **scope** (a
 sub-range of each parameter's definition range), while keeping the
 correlations between all parameter pairs low.
@@ -24,7 +25,7 @@ plhs = "0.1"
 ## Usage
 
 ```sh
-slhs --add 2 designs.json
+plhs --add 2 designs.json
 ```
 
 Options:

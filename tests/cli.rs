@@ -1,4 +1,4 @@
-//! End-to-end tests of the `slhs` binary: exit codes, backup, file writing.
+//! End-to-end tests of the `plhs` binary: exit codes, backup, file writing.
 
 use std::fs;
 use std::path::PathBuf;
@@ -6,10 +6,10 @@ use std::process::Command;
 
 use serde_json::Value;
 
-const BIN: &str = env!("CARGO_BIN_EXE_slhs");
+const BIN: &str = env!("CARGO_BIN_EXE_plhs");
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("slhs-cli-test-{}-{tag}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("plhs-cli-test-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir

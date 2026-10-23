@@ -1,4 +1,4 @@
-//! JSON (de)serialization for the `slhs` file format.
+//! JSON (de)serialization for the `plhs` file format.
 //!
 //! The whole document is handled as a `serde_json::Value` so that unknown
 //! fields and key order are preserved verbatim; only the fields understood

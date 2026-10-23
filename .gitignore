@@ -23,5 +23,5 @@ rustc-ice-*.txt
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# Backups of design JSON files written by the slhs binary
+# Backups of design JSON files written by the plhs binary
 *.bak

@@ -1,4 +1,4 @@
-//! `slhs` — the command-line front end of the `plhs` crate.
+//! The `plhs` command-line tool: pooled Latin Hypercube Sampling.
 //!
 //! Reads a JSON design file, adds `--add N` new designs scoped to the
 //! per-parameter scopes, and writes the result back (same file by default,
@@ -15,7 +15,7 @@ use plhs::json;
 
 #[derive(Parser)]
 #[command(
-    name = "slhs",
+    name = "plhs",
     version,
     about = "Pooled Latin Hypercube Sampling: augment a design pool with low-correlation designs scoped to a parameter sub-range"
 )]

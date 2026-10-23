@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 description = "Pooled Latin Hypercube Sampling: augment a pool of experiment designs with low-correlation designs scoped to a per-parameter sub-range"
 license = "MIT"
-repository = "https://github.com/mestrode/slhs"
+repository = "https://github.com/mestrode/plhs"
 readme = "README.md"
 keywords = ["lhs", "sampling", "doe", "experiment", "design"]
 categories = ["science", "mathematics", "simulation"]
@@ -22,5 +22,5 @@ name = "plhs"
 path = "src/lib.rs"
 
 [[bin]]
-name = "slhs"
+name = "plhs"
 path = "src/main.rs"

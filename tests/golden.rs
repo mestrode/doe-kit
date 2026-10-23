@@ -29,6 +29,6 @@ fn golden_output_is_reproduced() {
         String::from_utf8(output).unwrap(),
         expected,
         "golden output differs; if the algorithm changed intentionally, \
-         regenerate tests/fixtures/expected.json with the slhs binary"
+         regenerate tests/fixtures/expected.json with the plhs binary"
     );
 }
