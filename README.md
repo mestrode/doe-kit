@@ -25,14 +25,19 @@ plhs = "0.1"
 ## Usage
 
 ```sh
-plhs --add 2 designs.json
+plhs --add 2 designs.json        # refine inside the scopes
+plhs --explore 3 designs.json    # cover the whole surface
 ```
+
+Exactly one of `--add` and `--explore` is required; giving both, or
+neither, is a validation error.
 
 Options:
 
 | Option | Description |
 | --- | --- |
-| `--add N` (required) | number of new designs to add |
+| `--add N` | number of new designs inside the per-parameter scopes |
+| `--explore N` | number of new designs uniformly covering each parameter's full definition range (ignores `scope` and `distribution`) |
 | `--seed N` | random seed, default 42 (fixed, for reproducible runs) |
 | `--output FILE` | output file, default: the input file |
 | `--no-backup` | skip writing the backup file |
@@ -43,6 +48,11 @@ The input file is read, `N` new designs are appended to `designs`,
 back atomically. A backup of the original input is written to
 `<input>.bak` unless `--no-backup` is given. Unknown JSON fields (including
 `results`) and key order are preserved.
+
+The two modes form a workflow: run `--explore` first to spread designs over
+the whole parameter surface when nothing is known yet, evaluate the
+results, then narrow `scope` in the JSON and run `--add` to refine the
+interesting sections.
 
 Exit codes: `0` success, `1` validation error, `2` I/O error.
 
@@ -69,6 +79,14 @@ in-scope designs plus all new candidates. Assignments are enumerated
 exactly up to `--cap`; beyond that, a deterministic greedy fallback places
 designs one at a time. All computation happens in `[0, 1]` space; real
 values are written only in the output.
+
+`--explore` runs the same machinery with every parameter treated as
+uniform over its full definition range `[min, max]`: the JSON `scope` and
+any non-uniform `distribution` are ignored for placement, the bins span the
+whole range, and all existing designs take part in the binning (every
+value lies inside the definition range by definition). The result is a
+uniform, low-correlation enhancement of the whole surface instead of a
+specific section.
 
 ## JSON format
 
@@ -99,6 +117,7 @@ values are written only in the output.
   and is truncated to `[min, max]`.
 - `scope`: a `name`/`min`/`max` entry per parameter; the distribution is
   inherited from the parameter definition. Missing scope = copy of `params`.
+  Used by `--add`; ignored by `--explore` (still validated).
 - `designs`: all designs (old + new, appended).
 - `new_designs`: the designs added by the last run (overwritten).
 - `results`: output values per design name; passed through untouched.
@@ -111,7 +130,8 @@ one, 1 when no name matches the pattern).
 
 Candidate values are drawn from a ChaCha8 RNG seeded with `--seed` (default
 42). The same input file and seed always produce the same output, verified
-by a byte-for-byte golden test in CI.
+by byte-for-byte golden tests in CI — one for `--add` and one for
+`--explore`.
 
 ## Development
 

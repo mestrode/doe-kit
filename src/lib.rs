@@ -21,6 +21,16 @@
 //! All computation happens on the transformed `[0, 1]` values; real values
 //! are produced only for output.
 //!
+//! # Explore mode
+//!
+//! [`explore`] is the scoped augmentation's configuration-free
+//! counterpart: every parameter is treated as uniform over its full
+//! definition range `[min, max]`, ignoring scopes and non-uniform
+//! distributions, so the new designs cover the whole surface instead of a
+//! specific section. All existing designs lie in the definition range by
+//! definition, so the entire pool takes part in the binning. Explore the
+//! whole surface first, then refine sections with [`augment`] and a scope.
+//!
 //! # Determinism
 //!
 //! Candidate values are drawn from a ChaCha8 RNG seeded with an explicit
@@ -45,6 +55,28 @@
 //! // existing names use iteration 0, so the new ones are "1.1" and "1.2"
 //! assert_eq!(aug.new_designs[0].name, "1.1");
 //! assert_eq!(aug.new_designs[1].name, "1.2");
+//! # Ok::<(), plhs::Error>(())
+//! ```
+//!
+//! Exploring the whole surface instead:
+//!
+//! ```
+//! use plhs::{explore, Design, Parameter};
+//!
+//! // scope and gaussian distribution are ignored in explore mode
+//! let params = vec![
+//!     Parameter::gaussian("x", 0.0, 10.0, 5.0, 2.0)?.with_scope(2.0, 8.0)?,
+//! ];
+//! let designs = vec![
+//!     Design { name: "0.1".into(), values: vec![2.5] },
+//!     Design { name: "0.2".into(), values: vec![4.0] },
+//!     Design { name: "0.3".into(), values: vec![7.0] },
+//! ];
+//! let aug = explore(&params, &designs, 2, 42, 1_000_000)?;
+//! // the new designs cover the full definition range [0.0, 10.0]
+//! for design in &aug.new_designs {
+//!     assert!((0.0..=10.0).contains(&design.values[0]));
+//! }
 //! # Ok::<(), plhs::Error>(())
 //! ```
 
@@ -266,6 +298,35 @@ pub fn next_iteration<'a>(names: impl IntoIterator<Item = &'a str>) -> u64 {
     if found { max + 1 } else { 1 }
 }
 
+/// Samples `m` new designs that explore the whole surface.
+///
+/// The scoped refinement counterpart of [`augment`] without any
+/// configuration: every parameter is treated as uniform over its full
+/// definition range `[min, max]`, so the new designs cover the entire
+/// surface — tails, corners and sections outside the scope included —
+/// instead of a specific section. Scopes and non-uniform distributions of
+/// `params` are ignored; the new designs still fill empty equal-width
+/// bins of the full range (all existing designs lie inside the
+/// definition range by definition, so the whole pool takes part in the
+/// pooled Latin Hypercube property) and the assignment minimizes the same
+/// pair-correlation score.
+///
+/// `cap` and `seed` have the same meaning as in [`augment`].
+///
+/// # Errors
+///
+/// Returns an [`Error`] under the same conditions as [`augment`].
+pub fn explore(
+    params: &[Parameter],
+    designs: &[Design],
+    m: usize,
+    seed: u64,
+    cap: u64,
+) -> Result<Augmentation> {
+    let full: Vec<Parameter> = params.iter().map(Parameter::full_surface).collect();
+    augment(&full, designs, m, seed, cap)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,5 +425,119 @@ mod tests {
             Parameter::uniform("y", 0.0, 1.0).unwrap(),
         ];
         assert!(augment(&two, &designs, 1, 1, 100).is_err());
+    }
+
+    #[test]
+    fn explore_covers_the_whole_surface_not_the_scope() {
+        // gaussian parameter scoped to [4, 6], all designs clustered in
+        // the middle of the scope
+        let params = vec![
+            Parameter::gaussian("x", 0.0, 10.0, 5.0, 2.0)
+                .unwrap()
+                .with_scope(4.0, 6.0)
+                .unwrap(),
+        ];
+        let designs: Vec<Design> = [5.0, 5.1, 5.2]
+            .into_iter()
+            .enumerate()
+            .map(|(i, x)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![x],
+            })
+            .collect();
+
+        let aug = explore(&params, &designs, 3, 42, 1_000_000).unwrap();
+        assert_eq!(aug.new_designs.len(), 3);
+        // 6 equal-width bins over the full [0, 10]; the three designs share
+        // one bin, so the first three empty bins are 0, 1, 2 (single
+        // parameter: no pairs, enumeration ties resolve lexicographically)
+        for design in &aug.new_designs {
+            assert!(
+                (0.0..10.0).contains(&design.values[0]),
+                "{} outside the definition range",
+                design.values[0]
+            );
+            assert!(
+                design.values[0] < 5.0,
+                "{} inside the dense bin of the existing designs",
+                design.values[0]
+            );
+        }
+        // the new values lie outside the scope — that is the point of
+        // explore mode
+        assert!(
+            aug.new_designs
+                .iter()
+                .any(|d| !(4.0..=6.0).contains(&d.values[0])),
+            "explore produced only in-scope values"
+        );
+    }
+
+    #[test]
+    fn explore_pools_all_designs_of_the_definition_range() {
+        // designs at 0.5 lie outside the declared scope [2, 8] but inside
+        // the definition range; explore mode must count them
+        let params = vec![
+            Parameter::uniform("x", 0.0, 10.0)
+                .unwrap()
+                .with_scope(2.0, 8.0)
+                .unwrap(),
+        ];
+        let values = [
+            0.5, 0.5, 2.0, 2.55, 3.1, 3.65, 4.2, 4.75, 5.3, 5.85, 6.4, 6.95,
+        ];
+        let designs: Vec<Design> = values
+            .into_iter()
+            .enumerate()
+            .map(|(i, x)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![x],
+            })
+            .collect();
+
+        let aug = explore(&params, &designs, 3, 7, 1_000_000).unwrap();
+        // all 12 designs are in scope for the full-surface parameter:
+        // 12 + 3 = 15 bins of width 10/15; the new values avoid the
+        // occupied bins and stay inside the full range
+        for design in &aug.new_designs {
+            let x = design.values[0];
+            assert!((0.0..=10.0).contains(&x));
+            let bin = (x / 10.0 * 15.0).floor() as usize;
+            let occupied = values
+                .iter()
+                .map(|&v| (v / 10.0 * 15.0).floor() as usize)
+                .collect::<std::collections::BTreeSet<_>>();
+            assert!(
+                !occupied.contains(&bin),
+                "value {x} landed in an occupied full-range bin"
+            );
+        }
+        // names and iteration follow the same convention as augment
+        assert_eq!(aug.iteration, 1);
+        assert_eq!(aug.new_designs[0].name, "1.1");
+    }
+
+    #[test]
+    fn explore_is_deterministic_for_a_seed() {
+        let params = vec![
+            Parameter::uniform("x", 0.0, 10.0)
+                .unwrap()
+                .with_scope(2.0, 8.0)
+                .unwrap(),
+            Parameter::gaussian("y", 0.0, 10.0, 5.0, 2.0)
+                .unwrap()
+                .with_scope(3.0, 7.0)
+                .unwrap(),
+        ];
+        let designs: Vec<Design> = (0..12)
+            .map(|i| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![0.5 + i as f64 * 0.7, (i % 10) as f64 * 0.9 + 0.5],
+            })
+            .collect();
+        let a = explore(&params, &designs, 3, 7, 1_000_000).unwrap();
+        let b = explore(&params, &designs, 3, 7, 1_000_000).unwrap();
+        assert_eq!(a.new_designs, b.new_designs);
+        assert_eq!(a.score, b.score);
     }
 }
