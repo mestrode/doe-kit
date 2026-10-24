@@ -6,6 +6,11 @@
 //! `--explore N` covers the whole surface (uniform over each parameter's
 //! full definition range). The result is written back (same file by
 //! default, with a `.bak` backup of the input unless disabled).
+//!
+//! `sampling stats` analyzes the evaluated results of the pool instead:
+//! coverage, descriptive statistics, per-parameter correlations, scope
+//! split and decile means. It is read-only judgment support before
+//! expensive simulations are run.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,6 +38,11 @@ enum Command {
     /// low-correlation designs, scoped (--add) or whole-surface (--explore)
     #[command(name = "plhs")]
     Plhs(PlhsArgs),
+    /// Statistical analysis of the evaluated results: coverage, descriptive
+    /// statistics, per-parameter correlations, scope split, decile means
+    /// (read-only)
+    #[command(name = "stats")]
+    Stats(StatsArgs),
 }
 
 #[derive(Args)]
@@ -61,10 +71,19 @@ struct PlhsArgs {
     cap: u64,
 }
 
+#[derive(Args)]
+struct StatsArgs {
+    /// Input JSON file with the pool and evaluated results.
+    file: PathBuf,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let Command::Plhs(args) = cli.command;
-    match run(&args) {
+    let result = match cli.command {
+        Command::Plhs(args) => run(&args),
+        Command::Stats(args) => run_stats(&args),
+    };
+    match result {
         Ok(summary) => {
             println!("{summary}");
             ExitCode::SUCCESS
@@ -156,6 +175,73 @@ fn run(args: &PlhsArgs) -> Result<String, CliError> {
         aug.iteration,
         aug.score
     ))
+}
+
+/// Analyzes the evaluated results of the pool and formats the statistics
+/// report. Read-only: no files are written.
+fn run_stats(args: &StatsArgs) -> Result<String, CliError> {
+    let bytes = fs::read(&args.file).map_err(CliError::Io)?;
+    let root: Value = serde_json::from_slice(&bytes)
+        .map_err(|e| CliError::Validation(format!("invalid JSON: {e}")))?;
+    let params = json::parse_params(&root).map_err(validation)?;
+    let designs = json::parse_designs(&root, &params).map_err(validation)?;
+    let results = json::parse_results(&root).map_err(validation)?;
+    let stats = doe_stats::analyze(&params, &designs, &results).map_err(validation)?;
+    Ok(format_stats_report(&stats, designs.len(), results.len()))
+}
+
+/// Formats the statistics as a human-readable report (one block per result
+/// variable; statistics only, the judgment stays with the reader).
+fn format_stats_report(
+    stats: &[doe_stats::VariableStats],
+    total: usize,
+    evaluated: usize,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("pool: {total} designs, {evaluated} evaluated\n"));
+    for v in stats {
+        out.push_str(&format!(
+            "{}: n={}, min {:.6}, max {:.6}, mean {:.6}, median {:.6}, std {:.6}\n",
+            v.name, v.n, v.min, v.max, v.mean, v.median, v.std
+        ));
+        for p in &v.parameters {
+            match (p.pearson, p.spearman) {
+                (Some(pe), Some(se)) => {
+                    out.push_str(&format!(
+                        "  {}: pearson {pe:.6}, spearman {se:.6}\n",
+                        p.name
+                    ));
+                }
+                _ => {
+                    out.push_str(&format!(
+                        "  {}: pearson n/a, spearman n/a (n < 3 or no variance)\n",
+                        p.name
+                    ));
+                }
+            }
+            out.push_str(&format!(
+                "     in scope: {} evaluated, mean {:.6}, std {:.6}\n",
+                p.in_scope.count, p.in_scope.mean, p.in_scope.std
+            ));
+            match &p.out_of_scope {
+                Some(o) => out.push_str(&format!(
+                    "     outside scope: {} evaluated, mean {:.6}, std {:.6}\n",
+                    o.count, o.mean, o.std
+                )),
+                None => out.push_str("     outside scope: none evaluated\n"),
+            }
+            let deciles: Vec<String> = p
+                .deciles
+                .iter()
+                .map(|d| match d.mean {
+                    Some(m) => format!("{m:.6}"),
+                    None => "-".to_owned(),
+                })
+                .collect();
+            out.push_str(&format!("     deciles: [{}]\n", deciles.join(", ")));
+        }
+    }
+    out.trim_end().to_owned()
 }
 
 /// Writes via a temporary file and an atomic rename, so the output file is

@@ -11,6 +11,8 @@ use serde_json::{Map, Number, Value};
 use plhs::error::{Error, Result};
 use plhs::{Design, Parameter};
 
+use doe_stats::Results;
+
 fn invalid(msg: impl Into<String>) -> Error {
     Error::Invalid(msg.into())
 }
@@ -262,4 +264,37 @@ pub fn append_new_designs(root: &mut Value, params: &[Parameter], new: &[Design]
     }
     root_obj.insert("new_designs".to_owned(), Value::Array(new_arr));
     Ok(())
+}
+
+/// Parses `results` entries into typed [`Results`].
+///
+/// Each entry must be an object with a `name`; every other numeric field
+/// becomes a result variable. Non-numeric fields are not results and are
+/// ignored. A missing `results` key is an empty list — the caller decides
+/// whether that is an error.
+pub fn parse_results(root: &Value) -> Result<Vec<Results>> {
+    let root_obj = object(root, "root")?;
+    let entries: Vec<&Value> = match root_obj.get("results") {
+        None => Vec::new(),
+        Some(Value::Array(a)) => a.iter().collect(),
+        Some(_) => return Err(invalid("'root.results' must be an array")),
+    };
+    let mut out = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let obj = object(entry, "results entry")?;
+        let name = string(obj, "name", "results entry")?;
+        let mut values = BTreeMap::new();
+        for (key, v) in obj.iter() {
+            if key == "name" {
+                continue;
+            }
+            if let Some(n) = v.as_f64() {
+                if n.is_finite() {
+                    values.insert(key.clone(), n);
+                }
+            }
+        }
+        out.push(Results { name, values });
+    }
+    Ok(out)
 }

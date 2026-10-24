@@ -1,0 +1,15 @@
+[package]
+name = "doe-stats"
+description = "Statistical analysis of evaluated Design of Experiments results"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository = "https://github.com/mestrode/doe-kit"
+
+[dependencies]
+plhs = { path = "../../sampling/plhs" }
+
+[lib]
+name = "doe_stats"
+path = "src/lib.rs"

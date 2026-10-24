@@ -23,7 +23,8 @@ This is a Cargo workspace. Crates are organized by domain:
   name: `sampling`; one subcommand per sampling method)
 - `crates/sampling/*` — sampling method crates (`plhs`, ...)
 - `crates/metamodel/*` — surrogate/metamodel crates (planned)
-- `crates/sensitivity/*` — sensitivity analysis crates (planned)
+- `crates/sensitivity/*` — analysis of evaluated results (`doe-stats`,
+  statistics via `sampling stats`)
 
 A sampling method lands as a lib crate under `crates/sampling/<method>` plus
 a subcommand in `crates/sampling/bin`; method crates are lib-only.
@@ -54,6 +55,8 @@ cadence; publication to crates.io is manual and per crate.
   `--no-backup`, `--cap`. Exit codes: 0 success, 1 validation error,
   2 I/O error. Keep these stable.
 - Exactly one of `--add` / `--explore` must be provided.
+- `sampling stats` reports statistics only: it writes no files and makes
+  no recommendations; the judgment stays with the user.
 - Input files are backed up to `<file>.bak` unless `--no-backup` is given.
 - New user-facing functionality goes behind subcommands of the `doe` CLI;
   per-crate binaries are transitional.
