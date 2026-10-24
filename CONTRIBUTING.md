@@ -19,9 +19,14 @@ This is a Cargo workspace. Crates are organized by domain:
 
 - `crates/doe-kit` — the `doe` CLI crate (binary name: `doe`)
 - `crates/doe-types` — shared pool/design types
+- `crates/sampling/bin` — the `sampling` CLI crate (`doe-sampling`, binary
+  name: `sampling`; one subcommand per sampling method)
 - `crates/sampling/*` — sampling method crates (`plhs`, ...)
 - `crates/metamodel/*` — surrogate/metamodel crates (planned)
 - `crates/sensitivity/*` — sensitivity analysis crates (planned)
+
+A sampling method lands as a lib crate under `crates/sampling/<method>` plus
+a subcommand in `crates/sampling/bin`; method crates are lib-only.
 
 A new crate must be registered in the `members` list of the root `Cargo.toml`.
 Each crate carries its own version (independent semver) and its own release
@@ -44,9 +49,10 @@ cadence; publication to crates.io is manual and per crate.
 - Keep the workspace dependency-light.
 - RNG in sampling code is ChaCha8 with an explicit `--seed` (default 42);
   never introduce nondeterminism or unseeded randomness.
-- The `plhs` CLI contract: `plhs --add N file` / `plhs --explore N file`
-  with options `--seed`, `--output`, `--no-backup`, `--cap`. Exit codes:
-  0 success, 1 validation error, 2 I/O error. Keep these stable.
+- The `sampling plhs` CLI contract: `sampling plhs --add N file` /
+  `sampling plhs --explore N file` with options `--seed`, `--output`,
+  `--no-backup`, `--cap`. Exit codes: 0 success, 1 validation error,
+  2 I/O error. Keep these stable.
 - Exactly one of `--add` / `--explore` must be provided.
 - Input files are backed up to `<file>.bak` unless `--no-backup` is given.
 - New user-facing functionality goes behind subcommands of the `doe` CLI;

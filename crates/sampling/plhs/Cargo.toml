@@ -11,8 +11,6 @@ keywords = ["lhs", "sampling", "doe", "experiment", "design"]
 categories = ["science", "mathematics", "simulation"]
 
 [dependencies]
-serde_json = { version = "1", features = ["preserve_order"] }
-clap = { version = "4", features = ["derive"] }
 rand = "0.9"
 rand_chacha = "0.9"
 thiserror = "2"
@@ -20,7 +18,3 @@ thiserror = "2"
 [lib]
 name = "plhs"
 path = "src/lib.rs"
-
-[[bin]]
-name = "plhs"
-path = "src/main.rs"
