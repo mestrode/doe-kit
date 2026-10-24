@@ -1,0 +1,26 @@
+[package]
+name = "plhs"
+description = "Pooled Latin Hypercube Sampling: augment a pool of experiment designs with low-correlation designs scoped to a per-parameter sub-range"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository = "https://github.com/mestrode/doe-kit"
+readme = "README.md"
+keywords = ["lhs", "sampling", "doe", "experiment", "design"]
+categories = ["science", "mathematics", "simulation"]
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+clap = { version = "4", features = ["derive"] }
+rand = "0.9"
+rand_chacha = "0.9"
+thiserror = "2"
+
+[lib]
+name = "plhs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "plhs"
+path = "src/main.rs"
