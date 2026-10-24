@@ -1,7 +1,9 @@
 //! The `plhs` command-line tool: pooled Latin Hypercube Sampling.
 //!
-//! Reads a JSON design file, adds `--add N` new designs scoped to the
-//! per-parameter scopes, and writes the result back (same file by default,
+//! Reads a JSON design file and adds new designs in one of two modes:
+//! `--add N` refines inside the per-parameter scopes, `--explore N`
+//! covers the whole surface (uniform over each parameter's full
+//! definition range). The result is written back (same file by default,
 //! with a `.bak` backup of the input unless disabled).
 
 use std::fs;
@@ -17,14 +19,18 @@ use serde_json::Value;
 #[command(
     name = "plhs",
     version,
-    about = "Pooled Latin Hypercube Sampling: augment a design pool with low-correlation designs scoped to a parameter sub-range"
+    about = "Pooled Latin Hypercube Sampling: augment a design pool with low-correlation designs, scoped (--add) or whole-surface (--explore)"
 )]
 struct Args {
     /// Input JSON file; also the output file unless --output is given.
     file: PathBuf,
-    /// Number of new designs to add.
+    /// Number of new designs inside the per-parameter scopes.
     #[arg(short, long)]
-    add: usize,
+    add: Option<usize>,
+    /// Number of new designs uniformly covering each parameter's full
+    /// definition range (ignores scope and distribution).
+    #[arg(long)]
+    explore: Option<usize>,
     /// Random seed (fixed default for reproducible runs).
     #[arg(long, default_value_t = 42)]
     seed: u64,
@@ -84,16 +90,37 @@ fn validation(e: plhs::Error) -> CliError {
 }
 
 fn run(args: &Args) -> Result<String, CliError> {
-    if args.add == 0 {
-        return Err(CliError::Validation("--add must be at least 1".to_owned()));
+    // exactly one mode: scoped refinement or whole-surface exploration
+    let (verb, m, explore) = match (args.add, args.explore) {
+        (Some(n), None) => ("added", n, false),
+        (None, Some(n)) => ("explored", n, true),
+        (Some(_), Some(_)) => {
+            return Err(CliError::Validation(
+                "--add and --explore are mutually exclusive; give exactly one".to_owned(),
+            ));
+        }
+        (None, None) => {
+            return Err(CliError::Validation(
+                "one of --add or --explore is required".to_owned(),
+            ));
+        }
+    };
+    if m == 0 {
+        return Err(CliError::Validation(format!(
+            "{mode} must be at least 1",
+            mode = if explore { "--explore" } else { "--add" }
+        )));
     }
     let bytes = fs::read(&args.file).map_err(CliError::Io)?;
     let mut root: Value = serde_json::from_slice(&bytes)
         .map_err(|e| CliError::Validation(format!("invalid JSON: {e}")))?;
     let params = json::parse_params(&root).map_err(validation)?;
     let designs = json::parse_designs(&root, &params).map_err(validation)?;
-    let aug =
-        plhs::augment(&params, &designs, args.add, args.seed, args.cap).map_err(validation)?;
+    let aug = if explore {
+        plhs::explore(&params, &designs, m, args.seed, args.cap).map_err(validation)?
+    } else {
+        plhs::augment(&params, &designs, m, args.seed, args.cap).map_err(validation)?
+    };
 
     if !args.no_backup {
         let mut backup = args.file.clone().into_os_string();
@@ -108,7 +135,7 @@ fn run(args: &Args) -> Result<String, CliError> {
     write_atomic(&out, &out_bytes)?;
 
     Ok(format!(
-        "added {} designs (iteration {}), score {:.6}",
+        "{verb} {} designs (iteration {}), score {:.6}",
         aug.new_designs.len(),
         aug.iteration,
         aug.score

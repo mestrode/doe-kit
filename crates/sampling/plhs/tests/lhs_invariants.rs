@@ -1,7 +1,7 @@
 //! Latin Hypercube invariants of the augmentation.
 
 use plhs::binning::{bin_count, bin_index, empty_bins, occupied_bins};
-use plhs::{Design, Parameter, augment};
+use plhs::{Design, Parameter, augment, explore};
 
 fn params() -> Vec<Parameter> {
     vec![
@@ -115,4 +115,95 @@ fn score_of_chosen_assignment_beats_a_naive_one() {
     let designs = designs();
     let aug = augment(&params, &designs, 2, 99, 1_000_000).unwrap();
     assert!(aug.score <= 1.0, "score unreasonably high: {}", aug.score);
+}
+
+#[test]
+fn explore_counts_out_of_scope_designs_in_the_pool() {
+    // designs() has two designs at x = 0.5, outside the declared x scope
+    // [2, 8]; explore mode pools all designs over the full range
+    let params = params();
+    let designs = designs();
+    let m = 3;
+    let aug = explore(&params, &designs, m, 123, 1_000_000).unwrap();
+    assert_eq!(aug.new_designs.len(), m);
+
+    let full: Vec<Parameter> = params.iter().map(|p| p.full_surface()).collect();
+    for (j, param) in full.iter().enumerate() {
+        // every existing design lies inside the full definition range,
+        // so all of them take part in the binning
+        let in_scope: Vec<f64> = designs
+            .iter()
+            .map(|d| param.transform(d.values[j]))
+            .collect();
+        assert_eq!(in_scope.len(), designs.len());
+        let bins = bin_count(in_scope.len(), m);
+        let occupied = occupied_bins(&in_scope, bins);
+        let empty = empty_bins(bins, &occupied);
+
+        let mut seen = Vec::new();
+        for design in &aug.new_designs {
+            let value = design.values[j];
+            assert!(
+                (param.min..=param.max).contains(&value),
+                "{} outside the definition range of {}",
+                value,
+                param.name
+            );
+            let idx = bin_index(param.transform(value), bins);
+            assert!(
+                empty.contains(&idx),
+                "design {} value {} landed in occupied bin {idx}",
+                design.name,
+                value
+            );
+            assert!(
+                !seen.contains(&idx),
+                "bin {idx} used twice for {}",
+                param.name
+            );
+            seen.push(idx);
+        }
+
+        // x: the two designs at 0.5 are out of the declared scope but
+        // occupy full-range bins — binning over 12 pooled designs, not 10
+        if param.name == "x" {
+            assert_eq!(in_scope.len(), 12);
+            assert!(occupied.contains(&bin_index(param.transform(0.5), bins)));
+        }
+    }
+}
+
+#[test]
+fn explore_reaches_where_the_scoped_augment_cannot() {
+    // the scoped parameter x = [2, 8] is nearly fully occupied; augment can
+    // only place designs inside the scope, explore places them in the
+    // empty bins of the whole [0, 10] range
+    let params = vec![
+        Parameter::uniform("x", 0.0, 10.0)
+            .unwrap()
+            .with_scope(8.0, 10.0)
+            .unwrap(),
+        Parameter::uniform("y", 0.0, 10.0)
+            .unwrap()
+            .with_scope(0.0, 1.0)
+            .unwrap(),
+    ];
+    let designs: Vec<Design> = (0..8)
+        .map(|i| Design {
+            name: format!("0.{}", i + 1),
+            values: vec![8.1 + i as f64 * 0.22, 0.1 + i as f64 * 0.1],
+        })
+        .collect();
+
+    let exp = explore(&params, &designs, 2, 11, 1_000_000).unwrap();
+    // the whole [0, 8) stretch of x is empty in explore mode (the 10 bins
+    // over [0, 10] are occupied only in 8 and 9), so both new x values lie
+    // outside the old x scope [8, 10] — unreachable for the scoped augment
+    for design in &exp.new_designs {
+        assert!(
+            design.values[0] < 8.0,
+            "explore did not reach outside the old scope: {}",
+            design.values[0]
+        );
+    }
 }

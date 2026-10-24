@@ -143,6 +143,92 @@ fn validation_errors_exit_1() {
 }
 
 #[test]
+fn explore_mode_covers_the_whole_surface() {
+    let dir = temp_dir("explore");
+    let file = dir.join("designs.json");
+    fs::write(&file, fixture()).unwrap();
+
+    let (out, stdout) = run(&dir, &["--explore", "2", "designs.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.starts_with("explored 2 designs (iteration 1), score "),
+        "unexpected summary: {stdout}"
+    );
+
+    let root: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    let new = root["new_designs"].as_array().unwrap();
+    assert_eq!(new.len(), 2);
+    assert_eq!(new[0]["name"], "1.1");
+    assert_eq!(new[1]["name"], "1.2");
+
+    // the new designs cover the full definition range [0, 10] of both
+    // parameters, ignoring the scopes [2, 8] and [3, 7]
+    let mut outside_scope = false;
+    for design in new {
+        for (p, lo, hi) in [("x", 0.0, 10.0), ("y", 0.0, 10.0)] {
+            let v = design[p].as_f64().unwrap();
+            assert!((lo..=hi).contains(&v), "{p}={v} outside [0, 10]");
+        }
+        let x = design["x"].as_f64().unwrap();
+        let y = design["y"].as_f64().unwrap();
+        if !(2.0..=8.0).contains(&x) || !(3.0..=7.0).contains(&y) {
+            outside_scope = true;
+        }
+    }
+    assert!(
+        outside_scope,
+        "explore produced only in-scope values; the scopes were not ignored"
+    );
+
+    // with the same seed, explore produces values that differ from the
+    // scoped --add run: the mode genuinely changes the outcome
+    let add_file = dir.join("add.json");
+    fs::write(&add_file, fixture()).unwrap();
+    let (out, _) = run(&dir, &["--add", "2", add_file.to_str().unwrap()]);
+    assert!(out.status.success());
+    let add_root: Value = serde_json::from_str(&fs::read_to_string(&add_file).unwrap()).unwrap();
+    let differs = new
+        .iter()
+        .zip(add_root["new_designs"].as_array().unwrap())
+        .any(|(e, a)| e["x"] != a["x"] || e["y"] != a["y"]);
+    assert!(differs, "explore and add produced identical designs");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn explore_and_add_are_mutually_exclusive() {
+    let dir = temp_dir("exclusive");
+    let file = dir.join("designs.json");
+    fs::write(&file, fixture()).unwrap();
+
+    // both modes given
+    let (out, _) = run(&dir, &["--add", "2", "--explore", "1", "designs.json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("mutually exclusive"), "stderr: {stderr}");
+
+    // neither mode given
+    let (out, _) = run(&dir, &["designs.json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("one of --add or --explore is required"),
+        "stderr: {stderr}"
+    );
+
+    // zero designs in explore mode
+    let (out, _) = run(&dir, &["--explore", "0", "designs.json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--explore"), "stderr: {stderr}");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn missing_file_exits_2() {
     let dir = temp_dir("missing");
     let (out, _) = run(&dir, &["--add", "2", "does-not-exist.json"]);

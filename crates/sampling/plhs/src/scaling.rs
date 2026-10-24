@@ -143,6 +143,18 @@ impl Parameter {
         x >= self.scope_min && x <= self.scope_max
     }
 
+    /// Returns a copy of this parameter as it is treated by [`explore`
+    /// mode](crate::explore): uniform distribution over the full definition
+    /// range `[min, max]`, ignoring any scope and any declared
+    /// non-uniform distribution.
+    pub fn full_surface(&self) -> Self {
+        let mut full = self.clone();
+        full.distribution = Distribution::Uniform;
+        full.scope_min = full.min;
+        full.scope_max = full.max;
+        full
+    }
+
     /// CDF of the distribution truncated to the definition range; maps
     /// `[min, max]` to `[0, 1]`.
     fn cdf_trunc(&self, x: f64) -> f64 {
@@ -320,5 +332,29 @@ mod tests {
         assert!(p.in_scope(5.0));
         assert!(!p.in_scope(1.999));
         assert!(!p.in_scope(8.001));
+    }
+
+    #[test]
+    fn full_surface_overrides_distribution_and_scope() {
+        let p = param_gaussian_scoped().full_surface();
+        assert_eq!(p.distribution, Distribution::Uniform);
+        assert_eq!(p.scope_min, p.min);
+        assert_eq!(p.scope_max, p.max);
+        assert!(p.in_scope(p.min));
+        assert!(p.in_scope(p.max));
+        // the transform is now the plain affine full-range map
+        assert!(p.transform(0.0).abs() < 1e-12);
+        assert!((p.transform(10.0) - 1.0).abs() < 1e-12);
+        assert!((p.transform(2.5) - 0.25).abs() < 1e-12);
+        // the original parameter is untouched
+        let original = param_gaussian_scoped();
+        assert_eq!(original.scope_min, 3.0);
+        assert_eq!(
+            original.distribution,
+            Distribution::Gaussian {
+                mean: 5.0,
+                sigma: 2.0
+            }
+        );
     }
 }
