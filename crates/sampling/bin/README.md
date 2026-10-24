@@ -36,7 +36,7 @@ sampling plhs --add 2 designs.json        # refine inside the scopes
 sampling plhs --explore 3 designs.json    # cover the whole surface
 ```
 
-Exactly one of `--add` or `--explore` is required; giving both, or
+Exactly one of `--add` and `--explore` is required; giving both, or
 neither, is a validation error.
 
 Options:
