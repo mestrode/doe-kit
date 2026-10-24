@@ -277,6 +277,10 @@ fn stats_reports_variables_and_coverage() {
     assert!(stdout.contains("energy: n=3,"), "stdout: {stdout}");
     assert!(stdout.contains("pearson"), "stdout: {stdout}");
     assert!(stdout.contains("deciles"), "stdout: {stdout}");
+    // the sampling points themselves are reported too, alongside the
+    // result variables
+    assert!(stdout.contains("sampling points:"), "stdout: {stdout}");
+    assert!(stdout.contains("x vs y: pearson "), "stdout: {stdout}");
 
     // read-only: the input file is untouched
     assert_eq!(fs::read_to_string(&file).unwrap(), fixture());
@@ -284,17 +288,54 @@ fn stats_reports_variables_and_coverage() {
 }
 
 #[test]
-fn stats_without_results_exits_1() {
+fn stats_without_results_reports_sampling_points() {
     let dir = temp_dir("stats-empty");
     let file = dir.join("designs.json");
     let mut root: Value = serde_json::from_str(&fixture()).unwrap();
     root["results"] = Value::Array(vec![]);
+    let content = serde_json::to_string(&root).unwrap();
+    fs::write(&file, &content).unwrap();
+
+    // designs exist, nothing is evaluated: the sampling points themselves
+    // are analyzed instead of erroring out
+    let (out, stdout) = run(&dir, &["stats", "designs.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("pool: 30 designs, 0 evaluated"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("sampling points:"), "stdout: {stdout}");
+    assert!(stdout.contains("x: n=30, min "), "stdout: {stdout}");
+    assert!(stdout.contains("y: n=30, min "), "stdout: {stdout}");
+    assert!(stdout.contains("decile counts: ["), "stdout: {stdout}");
+    assert!(stdout.contains("x vs y: pearson "), "stdout: {stdout}");
+    // no result variable exists, so none is reported
+    assert!(!stdout.contains("energy"), "stdout: {stdout}");
+
+    // read-only: the input file is untouched
+    assert_eq!(fs::read_to_string(&file).unwrap(), content);
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn stats_without_designs_exits_1() {
+    let dir = temp_dir("stats-nodesigns");
+    let file = dir.join("designs.json");
+    let mut root: Value = serde_json::from_str(&fixture()).unwrap();
+    root["designs"] = Value::Array(vec![]);
+    root["results"] = Value::Array(vec![]);
     fs::write(&file, serde_json::to_string(&root).unwrap()).unwrap();
 
+    // a pool straight from `init` without any exploration: nothing to
+    // analyze at all
     let (out, _) = run(&dir, &["stats", "designs.json"]);
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("no results"), "stderr: {stderr}");
+    assert!(stderr.contains("no designs to analyze"), "stderr: {stderr}");
     fs::remove_dir_all(&dir).ok();
 }
 

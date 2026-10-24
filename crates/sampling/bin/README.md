@@ -14,7 +14,7 @@ Currently available subcommands:
 | --- | --- |
 | `init` | create a new pool file with two example parameters |
 | `plhs` | pooled Latin Hypercube Sampling (the `plhs` crate) |
-| `stats` | statistical analysis of evaluated results (the `doe-stats` crate) |
+| `stats` | statistical analysis of the pool: sampling points and evaluated results (the `doe-stats` crate) |
 
 ## Creating a new pool: `sampling init`
 
@@ -36,7 +36,7 @@ sampling plhs --add 2 designs.json        # refine inside the scopes
 sampling plhs --explore 3 designs.json    # cover the whole surface
 ```
 
-Exactly one of `--add` and `--explore` is required; giving both, or
+Exactly one of `--add` or `--explore` is required; giving both, or
 neither, is a validation error.
 
 Options:
@@ -64,15 +64,29 @@ interesting sections.
 Exit codes: `0` success, `1` validation error, `2` I/O error (missing
 subcommand or unknown subcommand: usage error).
 
-## Judging results before expensive simulations: `sampling stats`
+## Judging the pool and results before expensive simulations: `sampling stats`
 
 ```sh
 sampling stats designs.json
 ```
 
-Read-only statistical analysis of the evaluated `results` (nothing is
-written, the input file is untouched). Per numeric result variable (any
-numeric field on a result entry, e.g. `energy`):
+Read-only statistical analysis of the pool (nothing is written, the input
+file is untouched). Two blocks are reported:
+
+Statistics of the sampling points themselves (the `designs`, independent
+of any evaluation — this is what to look at right after `plhs` generated
+new designs):
+
+1. Per parameter: descriptive statistics of the design values (n, min,
+   max, mean, median, sample std).
+2. Per parameter: sampling-point counts per decile (10 equal-width bins)
+   of the definition range — how uniformly the range is covered.
+3. Per parameter pair: Pearson and Spearman correlation between the
+   parameter values (n/a below 3 designs or without variance).
+
+Statistics of the evaluated `results` (reported only when `results`
+exist). Per numeric result variable (any numeric field on a result
+entry, e.g. `energy`):
 
 1. Coverage: how many of the pool's designs are evaluated.
 2. Descriptive statistics: n, min, max, mean, median, sample std.
@@ -84,10 +98,13 @@ numeric field on a result entry, e.g. `energy`):
 5. Per parameter: result mean per decile (10 equal-width bins) of the
    definition range.
 
-The tool reports statistics; the judgment — run expensive simulations or
-not, where to set the scope for `--add` — stays with you. Exit codes as
-above; `results` empty or a result name that matches no design is a
-validation error (exit 1).
+A pool without `results` is no longer an error: the sampling points are
+analyzed on their own, so `init` followed by `plhs` and `stats` reports
+how well the generated points are distributed and whether they
+correlate. The tool reports statistics; the judgment — run expensive
+simulations or not, where to set the scope for `--add` — stays with you.
+Exit codes as above; a pool with no designs at all, or a result name
+that matches no design, is a validation error (exit 1).
 
 ## JSON format
 
