@@ -336,6 +336,45 @@ fn init_refuses_an_existing_file() {
 }
 
 #[test]
+fn explore_works_on_a_fresh_init_pool() {
+    let dir = temp_dir("init-explore");
+
+    // create a fresh pool, then run the first exploration on it
+    let (out, _) = run(&dir, &["init", "pool.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let (out, stdout) = run(&dir, &["plhs", "--explore", "10", "pool.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.starts_with("explored 10 designs (iteration 1), score "),
+        "unexpected summary: {stdout}"
+    );
+
+    let root: Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("pool.json")).unwrap()).unwrap();
+    let designs = root["designs"].as_array().unwrap();
+    assert_eq!(designs.len(), 10);
+    assert_eq!(designs[0]["name"], "1.1");
+    assert_eq!(designs[9]["name"], "1.10");
+    let new = root["new_designs"].as_array().unwrap();
+    assert_eq!(new.len(), 10);
+
+    // the backup holds the untouched init skeleton
+    let backup: Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("pool.json.bak")).unwrap()).unwrap();
+    assert_eq!(backup["designs"].as_array().unwrap().len(), 0);
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn stats_ignores_non_numeric_result_fields() {
     let dir = temp_dir("stats-nonnumeric");
     let file = dir.join("designs.json");
