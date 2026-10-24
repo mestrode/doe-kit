@@ -116,7 +116,9 @@ pub struct Augmentation {
 ///
 /// Returns an [`Error`] for any validation problem: duplicate parameters,
 /// invalid scope entries, designs missing parameter values, parameter pairs
-/// with fewer than three shared in-scope designs, and violated invariants.
+/// with one or two shared in-scope designs (a pair with no shared in-scope
+/// designs, e.g. an empty pool, is valid — the new designs alone carry its
+/// pooled correlation), and violated invariants.
 pub fn augment(
     params: &[Parameter],
     designs: &[Design],
@@ -216,7 +218,12 @@ pub fn augment(
                     ys.push(params[b].transform(vb));
                 }
             }
-            if xs.len() < 3 {
+            // A pair with no shared in-scope designs (e.g. an empty pool
+            // straight from `sampling init`) is valid: its pooled
+            // correlation is then carried by the new designs alone. A
+            // pair with one or two shared designs has a degenerate
+            // existing correlation and is rejected.
+            if !xs.is_empty() && xs.len() < 3 {
                 return Err(Error::Pair {
                     a: params[a].name.clone(),
                     b: params[b].name.clone(),
@@ -504,6 +511,37 @@ mod tests {
         // names and iteration follow the same convention as augment
         assert_eq!(aug.iteration, 1);
         assert_eq!(aug.new_designs[0].name, "1.1");
+    }
+
+    #[test]
+    fn explore_on_an_empty_pool_creates_all_new_designs() {
+        // a fresh pool straight from `sampling init`: two example
+        // parameters, no designs yet — the first `--explore` run must work
+        let params = vec![
+            Parameter::uniform("param_uniform", 0.0, 10.0).unwrap(),
+            Parameter::gaussian("param_gaussian", 0.0, 10.0, 5.0, 2.0).unwrap(),
+        ];
+        let aug = explore(&params, &[], 10, 42, 1_000_000).unwrap();
+        assert_eq!(aug.new_designs.len(), 10);
+        assert_eq!(aug.iteration, 1);
+        for (i, design) in aug.new_designs.iter().enumerate() {
+            assert_eq!(design.name, format!("1.{}", i + 1));
+            assert!((0.0..=10.0).contains(&design.values[0]));
+            assert!((0.0..=10.0).contains(&design.values[1]));
+        }
+    }
+
+    #[test]
+    fn augment_on_an_empty_pool_creates_all_new_designs() {
+        // same code path via the scoped refinement: an empty pool has no
+        // pair series yet, the new designs alone carry the Latin Hypercube
+        let params = vec![
+            Parameter::uniform("x", 0.0, 10.0).unwrap(),
+            Parameter::uniform("y", 0.0, 10.0).unwrap(),
+        ];
+        let aug = augment(&params, &[], 5, 42, 1_000_000).unwrap();
+        assert_eq!(aug.new_designs.len(), 5);
+        assert_eq!(aug.iteration, 1);
     }
 
     #[test]
