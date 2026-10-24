@@ -12,8 +12,22 @@ Currently available subcommands:
 
 | Subcommand | Purpose |
 | --- | --- |
+| `init` | create a new pool file with two example parameters |
 | `plhs` | pooled Latin Hypercube Sampling (the `plhs` crate) |
 | `stats` | statistical analysis of evaluated results (the `doe-stats` crate) |
+
+## Creating a new pool: `sampling init`
+
+```sh
+sampling init designs.json
+```
+
+Writes a skeleton pool with two example parameters (`param_uniform`,
+`param_gaussian`) and an empty `designs` list — edit `params` by hand, then
+run `plhs` or `stats` on the file. The skeleton sets no `scope` (the full
+parameter ranges apply) and no `results` (nothing is evaluated yet), so it
+is immediately valid. `init` refuses to overwrite an existing file
+(validation error, exit 1); there is no `--force`.
 
 ## Usage
 

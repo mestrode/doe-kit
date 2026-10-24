@@ -10,7 +10,8 @@
 //!   from the value and appends new designs back into it,
 //! - [`backup`] writes the `<path>.bak` backup of the original bytes,
 //! - [`serialize`] and [`write_atomic`] turn the value back into the
-//!   canonical pretty JSON on disk without ever leaving a partial write.
+//!   canonical pretty JSON on disk without ever leaving a partial write,
+//! - [`skeleton`] builds the example pool that starts a new file.
 
 pub mod error;
 pub mod format;
@@ -20,6 +21,33 @@ use std::path::Path;
 use serde_json::Value;
 
 pub use error::{Error, Result};
+
+/// Returns the example pool written by `sampling init`: exactly two
+/// example parameters — `param_uniform` and `param_gaussian` — an empty
+/// `designs` list, no `scope` (defaults to the full parameter ranges) and
+/// no `results` (none evaluated yet). The output is immediately parseable
+/// so the other subcommands run on it once the user edits `params`.
+pub fn skeleton() -> Value {
+    serde_json::json!({
+        "params": [
+            {
+                "name": "param_uniform",
+                "min": 0,
+                "max": 10,
+                "distribution": "uniform"
+            },
+            {
+                "name": "param_gaussian",
+                "min": 0,
+                "max": 10,
+                "mean": 5,
+                "sigma": 2,
+                "distribution": "gaussian"
+            }
+        ],
+        "designs": []
+    })
+}
 
 /// Reads the file at `path` and parses it as JSON.
 ///
@@ -62,5 +90,24 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
             let _ = std::fs::remove_file(&tmp);
             Err(Error::Io(e))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skeleton_parses_into_two_example_params_and_no_designs() {
+        let root = skeleton();
+        let params = format::parse_params(&root).expect("skeleton params must parse");
+        assert_eq!(params.len(), 2, "exactly two example parameters");
+        assert_eq!(params[0].name, "param_uniform");
+        assert_eq!(params[1].name, "param_gaussian");
+        assert!(root.get("scope").is_none(), "no scope: full range");
+        assert!(root.get("results").is_none(), "no results until evaluated");
+        assert!(root["designs"].as_array().unwrap().is_empty());
+        let designs = format::parse_designs(&root, &params).expect("empty pool must parse");
+        assert!(designs.is_empty());
     }
 }
