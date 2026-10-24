@@ -13,10 +13,12 @@
 //!
 //! `sampling stats` analyzes the pool (read-only judgment support before
 //! expensive simulations are run): statistics of the sampling points
-//! themselves — per-parameter descriptive statistics, decile coverage of
-//! the definition range and pairwise parameter correlations — plus, when
-//! results exist, coverage, per-parameter correlations, scope split and
-//! decile means per result variable.
+//! themselves — per-parameter descriptive statistics, decile coverage and
+//! outer-decile counts of the definition range, space-filling metrics in
+//! the unit cube (min pairwise distance, mean nearest-neighbor distance,
+//! centered L2 discrepancy) and pairwise parameter correlations — plus,
+//! when results exist, coverage, per-parameter correlations, scope split
+//! and decile means per result variable.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -231,6 +233,19 @@ fn run_stats(args: &StatsArgs) -> Result<String, CliError> {
     Ok(format_stats_report(&pool, &stats, results.len()))
 }
 
+/// Formats `n / k` as a context number: an integer when it divides
+/// evenly, one decimal otherwise.
+fn designs_per_parameter(designs: usize, parameters: usize) -> String {
+    if parameters == 0 {
+        return "0".to_owned();
+    }
+    if designs % parameters == 0 {
+        format!("{}", designs / parameters)
+    } else {
+        format!("{:.1}", designs as f64 / parameters as f64)
+    }
+}
+
 /// Formats the statistics as a human-readable report: one block for the
 /// sampling points, then one block per result variable. Statistics only,
 /// the judgment stays with the reader.
@@ -240,9 +255,11 @@ fn format_stats_report(
     evaluated: usize,
 ) -> String {
     let mut out = String::new();
+    let parameters = pool.parameters.len();
     out.push_str(&format!(
-        "pool: {} designs, {evaluated} evaluated\n",
-        pool.total
+        "pool: {} designs, {evaluated} evaluated, {parameters} parameters ({} designs per parameter)\n",
+        pool.total,
+        designs_per_parameter(pool.total, parameters)
     ));
     out.push_str("sampling points:\n");
     for p in &pool.parameters {
@@ -251,8 +268,24 @@ fn format_stats_report(
             p.name, p.n, p.min, p.max, p.mean, p.median, p.std
         ));
         let deciles: Vec<String> = p.deciles.iter().map(|c| c.to_string()).collect();
-        out.push_str(&format!("     decile counts: [{}]\n", deciles.join(", ")));
+        out.push_str(&format!(
+            "     decile counts: [{}], outer deciles: {}\n",
+            deciles.join(", "),
+            p.outer_deciles
+        ));
     }
+    match pool.min_pairwise_distance {
+        Some(d) => out.push_str(&format!("  min pairwise distance: {d:.6}\n")),
+        None => out.push_str("  min pairwise distance: n/a (single design)\n"),
+    }
+    match pool.mean_nearest_neighbor {
+        Some(d) => out.push_str(&format!("  mean nearest neighbor: {d:.6}\n")),
+        None => out.push_str("  mean nearest neighbor: n/a (single design)\n"),
+    }
+    out.push_str(&format!(
+        "  discrepancy (CL2): {:.6}\n",
+        pool.discrepancy_cl2
+    ));
     for pair in &pool.pairs {
         match (pair.pearson, pair.spearman) {
             (Some(pe), Some(se)) => out.push_str(&format!(
