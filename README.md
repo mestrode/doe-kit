@@ -1,2 +1,1 @@
-# slhs
-Scoped Latin Hypercube Sampling
+[object Object]
