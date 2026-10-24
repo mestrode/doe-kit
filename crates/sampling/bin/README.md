@@ -75,13 +75,25 @@ file is untouched). Two blocks are reported:
 
 Statistics of the sampling points themselves (the `designs`, independent
 of any evaluation — this is what to look at right after `plhs` generated
-new designs):
+new designs). The pool line opens the report with the total, the
+evaluated count and the context number of designs per parameter:
 
 1. Per parameter: descriptive statistics of the design values (n, min,
    max, mean, median, sample std).
 2. Per parameter: sampling-point counts per decile (10 equal-width bins)
-   of the definition range — how uniformly the range is covered.
-3. Per parameter pair: Pearson and Spearman correlation between the
+   of the definition range — how uniformly the range is covered — plus
+   the outer deciles (points in the first + last decile), telling
+   whether the range edges are populated.
+3. Space-filling metrics over all designs in the unit cube (every
+   parameter linearly scaled to [0, 1] of its definition range, so
+   mixed units stay comparable): the minimal pairwise distance (near
+   zero means near-duplicate parameter sets) and the mean
+   nearest-neighbor distance (clumping); both n/a for a single design.
+4. The centered L2 discrepancy (CL2, Hickernell) in the same normalized
+   space: a single uniformity number for the whole pool, comparable
+   between candidate pools — run `--explore` with a different `--seed`
+   and compare; lower is better.
+5. Per parameter pair: Pearson and Spearman correlation between the
    parameter values (n/a below 3 designs or without variance).
 
 Statistics of the evaluated `results` (reported only when `results`

@@ -271,7 +271,7 @@ fn stats_reports_variables_and_coverage() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        stdout.contains("pool: 30 designs, 3 evaluated"),
+        stdout.contains("pool: 30 designs, 3 evaluated, 2 parameters (15 designs per parameter)"),
         "stdout: {stdout}"
     );
     assert!(stdout.contains("energy: n=3,"), "stdout: {stdout}");
@@ -281,6 +281,16 @@ fn stats_reports_variables_and_coverage() {
     // result variables
     assert!(stdout.contains("sampling points:"), "stdout: {stdout}");
     assert!(stdout.contains("x vs y: pearson "), "stdout: {stdout}");
+    assert!(stdout.contains("outer deciles: "), "stdout: {stdout}");
+    assert!(
+        stdout.contains("min pairwise distance: "),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("mean nearest neighbor: "),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("discrepancy (CL2): "), "stdout: {stdout}");
 
     // read-only: the input file is untouched
     assert_eq!(fs::read_to_string(&file).unwrap(), fixture());
@@ -305,19 +315,107 @@ fn stats_without_results_reports_sampling_points() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        stdout.contains("pool: 30 designs, 0 evaluated"),
+        stdout.contains("pool: 30 designs, 0 evaluated, 2 parameters (15 designs per parameter)"),
         "stdout: {stdout}"
     );
     assert!(stdout.contains("sampling points:"), "stdout: {stdout}");
     assert!(stdout.contains("x: n=30, min "), "stdout: {stdout}");
     assert!(stdout.contains("y: n=30, min "), "stdout: {stdout}");
     assert!(stdout.contains("decile counts: ["), "stdout: {stdout}");
+    assert!(stdout.contains("outer deciles: "), "stdout: {stdout}");
+    assert!(
+        stdout.contains("min pairwise distance: "),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("mean nearest neighbor: "),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("discrepancy (CL2): "), "stdout: {stdout}");
     assert!(stdout.contains("x vs y: pearson "), "stdout: {stdout}");
     // no result variable exists, so none is reported
     assert!(!stdout.contains("energy"), "stdout: {stdout}");
 
     // read-only: the input file is untouched
     assert_eq!(fs::read_to_string(&file).unwrap(), content);
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn stats_single_design_reports_na_distances() {
+    let dir = temp_dir("stats-single");
+    let file = dir.join("designs.json");
+    fs::write(
+        &file,
+        concat!(
+            "{\n",
+            "  \"params\": [{ \"name\": \"x\", \"min\": 0, \"max\": 10, \"distribution\": \"uniform\" }],\n",
+            "  \"designs\": [{ \"name\": \"0.1\", \"x\": 5 }]\n",
+            "}\n"
+        ),
+    )
+    .unwrap();
+
+    // one design: no pair exists, so the distances are n/a, but the
+    // discrepancy of a single centered point is well defined (sqrt(1/12))
+    let (out, stdout) = run(&dir, &["stats", "designs.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("pool: 1 designs, 0 evaluated, 1 parameters (1 designs per parameter)"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("min pairwise distance: n/a"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("mean nearest neighbor: n/a"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("discrepancy (CL2): 0.288675"),
+        "stdout: {stdout}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn stats_fractional_designs_per_parameter() {
+    let dir = temp_dir("stats-fraction");
+    let file = dir.join("designs.json");
+    fs::write(
+        &file,
+        concat!(
+            "{\n",
+            "  \"params\": [\n",
+            "    { \"name\": \"x\", \"min\": 0, \"max\": 10, \"distribution\": \"uniform\" },\n",
+            "    { \"name\": \"y\", \"min\": 0, \"max\": 10, \"distribution\": \"uniform\" }\n",
+            "  ],\n",
+            "  \"designs\": [\n",
+            "    { \"name\": \"0.1\", \"x\": 1, \"y\": 2 },\n",
+            "    { \"name\": \"0.2\", \"x\": 4, \"y\": 5 },\n",
+            "    { \"name\": \"0.3\", \"x\": 7, \"y\": 8 }\n",
+            "  ]\n",
+            "}\n"
+        ),
+    )
+    .unwrap();
+
+    // 3 designs over 2 parameters: the context number is fractional
+    let (out, stdout) = run(&dir, &["stats", "designs.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("pool: 3 designs, 0 evaluated, 2 parameters (1.5 designs per parameter)"),
+        "stdout: {stdout}"
+    );
     fs::remove_dir_all(&dir).ok();
 }
 
