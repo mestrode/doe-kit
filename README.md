@@ -8,8 +8,10 @@ model of experiment designs; the `doe` command-line tool ties them together.
 - `doe-kit` — the `doe` command-line tool
 - `doe-types` — shared pool/design data types (placeholder; types land with
   the sampling crate)
-- `crates/sampling/*` — sampling methods, starting with `plhs`, pooled Latin
-  Hypercube Sampling (in review)
+- `doe-sampling` — the `sampling` command-line tool, one subcommand per
+  sampling method (`crates/sampling/bin`)
+- `crates/sampling/*` — sampling method crates (`plhs`, pooled Latin
+  Hypercube Sampling)
 
 ## Development
 

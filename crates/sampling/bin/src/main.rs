@@ -1,10 +1,11 @@
-//! The `plhs` command-line tool: pooled Latin Hypercube Sampling.
+//! The `sampling` command-line tool: Design of Experiments sampling methods.
 //!
-//! Reads a JSON design file and adds new designs in one of two modes:
-//! `--add N` refines inside the per-parameter scopes, `--explore N`
-//! covers the whole surface (uniform over each parameter's full
-//! definition range). The result is written back (same file by default,
-//! with a `.bak` backup of the input unless disabled).
+//! One subcommand per sampling method. `sampling plhs` is pooled Latin
+//! Hypercube Sampling: it reads a JSON design file and adds new designs in
+//! one of two modes — `--add N` refines inside the per-parameter scopes,
+//! `--explore N` covers the whole surface (uniform over each parameter's
+//! full definition range). The result is written back (same file by
+//! default, with a `.bak` backup of the input unless disabled).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,16 +13,30 @@ use std::process::ExitCode;
 
 mod json;
 
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use serde_json::Value;
 
 #[derive(Parser)]
 #[command(
-    name = "plhs",
+    name = "sampling",
     version,
-    about = "Pooled Latin Hypercube Sampling: augment a design pool with low-correlation designs, scoped (--add) or whole-surface (--explore)"
+    about = "Design of Experiments sampling methods; each method is a subcommand"
 )]
-struct Args {
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Pooled Latin Hypercube Sampling: augment a design pool with
+    /// low-correlation designs, scoped (--add) or whole-surface (--explore)
+    #[command(name = "plhs")]
+    Plhs(PlhsArgs),
+}
+
+#[derive(Args)]
+struct PlhsArgs {
     /// Input JSON file; also the output file unless --output is given.
     file: PathBuf,
     /// Number of new designs inside the per-parameter scopes.
@@ -47,7 +62,8 @@ struct Args {
 }
 
 fn main() -> ExitCode {
-    let args = Args::parse();
+    let cli = Cli::parse();
+    let Command::Plhs(args) = cli.command;
     match run(&args) {
         Ok(summary) => {
             println!("{summary}");
@@ -89,7 +105,7 @@ fn validation(e: plhs::Error) -> CliError {
     CliError::Validation(e.to_string())
 }
 
-fn run(args: &Args) -> Result<String, CliError> {
+fn run(args: &PlhsArgs) -> Result<String, CliError> {
     // exactly one mode: scoped refinement or whole-surface exploration
     let (verb, m, explore) = match (args.add, args.explore) {
         (Some(n), None) => ("added", n, false),

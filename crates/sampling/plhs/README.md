@@ -1,8 +1,8 @@
 # plhs
 
-Pooled Latin Hypercube Sampling. The Rust crate and the command-line
-binary are both named `plhs`, published on
-[crates.io](https://crates.io/crates/plhs).
+Pooled Latin Hypercube Sampling. `plhs` is a Rust library crate, published
+on [crates.io](https://crates.io/crates/plhs). The command-line tool lives
+in the sibling crate `doe-sampling`: binary `sampling`, subcommand `plhs`.
 
 `plhs` augments a pool of existing experiment designs with new designs that
 preserve the Latin Hypercube property inside a per-parameter **scope** (a
@@ -11,10 +11,6 @@ correlations between all parameter pairs low.
 
 ## Install
 
-```sh
-cargo install plhs
-```
-
 Library use:
 
 ```toml
@@ -22,39 +18,13 @@ Library use:
 plhs = "0.1"
 ```
 
-## Usage
+## Explore mode
 
-```sh
-plhs --add 2 designs.json        # refine inside the scopes
-plhs --explore 3 designs.json    # cover the whole surface
-```
-
-Exactly one of `--add` and `--explore` is required; giving both, or
-neither, is a validation error.
-
-Options:
-
-| Option | Description |
-| --- | --- |
-| `--add N` | number of new designs inside the per-parameter scopes |
-| `--explore N` | number of new designs uniformly covering each parameter's full definition range (ignores `scope` and `distribution`) |
-| `--seed N` | random seed, default 42 (fixed, for reproducible runs) |
-| `--output FILE` | output file, default: the input file |
-| `--no-backup` | skip writing the backup file |
-| `--cap N` | exact-enumeration cap, default 1000000; above it, greedy sequential selection is used |
-
-The input file is read, `N` new designs are appended to `designs`,
-`new_designs` is overwritten with the new batch, and the result is written
-back atomically. A backup of the original input is written to
-`<input>.bak` unless `--no-backup` is given. Unknown JSON fields (including
-`results`) and key order are preserved.
-
-The two modes form a workflow: run `--explore` first to spread designs over
-the whole parameter surface when nothing is known yet, evaluate the
-results, then narrow `scope` in the JSON and run `--add` to refine the
-interesting sections.
-
-Exit codes: `0` success, `1` validation error, `2` I/O error.
+`explore()` is the scoped augmentation's configuration-free counterpart:
+every parameter is treated as uniform over its full definition range
+`[min, max]`, ignoring scopes and non-uniform distributions, so the new
+designs cover the whole surface instead of a specific section. Explore the
+whole surface first, then refine sections with `augment()` and a scope.
 
 ## Algorithm
 
@@ -76,62 +46,22 @@ parameter** (the Latin Hypercube property) with the lowest score is chosen.
 The score of an assignment is the sum of squared Pearson correlations over
 all parameter pairs, computed on the transformed values of the shared
 in-scope designs plus all new candidates. Assignments are enumerated
-exactly up to `--cap`; beyond that, a deterministic greedy fallback places
-designs one at a time. All computation happens in `[0, 1]` space; real
-values are written only in the output.
+exactly up to the configured cap; beyond that, a deterministic greedy
+fallback places designs one at a time. All computation happens in `[0, 1]`
+space; real values are written only in the output.
 
-`--explore` runs the same machinery with every parameter treated as
-uniform over its full definition range `[min, max]`: the JSON `scope` and
-any non-uniform `distribution` are ignored for placement, the bins span the
-whole range, and all existing designs take part in the binning (every
-value lies inside the definition range by definition). The result is a
-uniform, low-correlation enhancement of the whole surface instead of a
-specific section.
-
-## JSON format
-
-```jsonc
-{
-  "params": [
-    { "name": "x", "min": 0, "max": 10, "distribution": "uniform" },
-    { "name": "y", "min": 0, "max": 10, "mean": 5, "sigma": 2, "distribution": "gaussian" }
-  ],
-  // optional: narrows each parameter's range; entry per parameter required
-  "scope": [
-    { "name": "x", "min": 2, "max": 8 },
-    { "name": "y", "min": 3, "max": 7 }
-  ],
-  "designs": [
-    { "name": "0.1", "x": 2.1667, "y": 4.4263 },
-    { "name": "0.2", "x": 4.8333, "y": 3.0121 }
-  ],
-  "new_designs": [],
-  "results": [
-    { "name": "0.1", "energy": 42.1 }
-  ]
-}
-```
-
-- `params`: parameter list. `distribution` defaults to `uniform`;
-  `gaussian` (alias `normal`) requires `mean` (alias `nom`) and `sigma`,
-  and is truncated to `[min, max]`.
-- `scope`: a `name`/`min`/`max` entry per parameter; the distribution is
-  inherited from the parameter definition. Missing scope = copy of `params`.
-  Used by `--add`; ignored by `--explore` (still validated).
-- `designs`: all designs (old + new, appended).
-- `new_designs`: the designs added by the last run (overwritten).
-- `results`: output values per design name; passed through untouched.
-
-New designs are named `{iteration}.{design}` with `design` starting at 1;
-the next iteration is detected from the existing names (maximum found plus
-one, 1 when no name matches the pattern).
+`explore()` runs the same machinery with every parameter treated as
+uniform over its full definition range `[min, max]`: scopes and non-uniform
+distributions are ignored for placement, the bins span the whole range, and
+all existing designs take part in the binning (every value lies inside the
+definition range by definition). The result is a uniform, low-correlation
+enhancement of the whole surface instead of a specific section.
 
 ## Determinism
 
-Candidate values are drawn from a ChaCha8 RNG seeded with `--seed` (default
-42). The same input file and seed always produce the same output, verified
-by byte-for-byte golden tests in CI — one for `--add` and one for
-`--explore`.
+Candidate values are drawn from a ChaCha8 RNG seeded with an explicit
+seed. The same input and seed always produce the same output; the CLI pins
+the default seed to 42 and verifies it with byte-for-byte golden tests.
 
 ## Development
 

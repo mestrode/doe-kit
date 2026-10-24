@@ -1,4 +1,4 @@
-//! End-to-end tests of the `plhs` binary: exit codes, backup, file writing.
+//! End-to-end tests of the `sampling` binary: exit codes, backup, file writing.
 
 use std::fs;
 use std::path::PathBuf;
@@ -6,10 +6,10 @@ use std::process::Command;
 
 use serde_json::Value;
 
-const BIN: &str = env!("CARGO_BIN_EXE_plhs");
+const BIN: &str = env!("CARGO_BIN_EXE_sampling");
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("plhs-cli-test-{}-{tag}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("sampling-cli-test-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -36,7 +36,7 @@ fn happy_path_writes_output_and_backup() {
     fs::write(&file, fixture()).unwrap();
     let original = fs::read(&file).unwrap();
 
-    let (out, stdout) = run(&dir, &["--add", "2", "designs.json"]);
+    let (out, stdout) = run(&dir, &["plhs", "--add", "2", "designs.json"]);
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -70,11 +70,11 @@ fn second_run_increments_iteration_and_overwrites_new_designs() {
     let file = dir.join("designs.json");
     fs::write(&file, fixture()).unwrap();
 
-    let (out, stdout) = run(&dir, &["--add", "2", "designs.json"]);
+    let (out, stdout) = run(&dir, &["plhs", "--add", "2", "designs.json"]);
     assert!(out.status.success());
     assert!(stdout.contains("iteration 1"), "first run: {stdout}");
 
-    let (out, stdout) = run(&dir, &["--add", "1", "designs.json"]);
+    let (out, stdout) = run(&dir, &["plhs", "--add", "1", "designs.json"]);
     assert!(out.status.success());
     assert!(stdout.contains("iteration 2"), "second run: {stdout}");
 
@@ -97,6 +97,7 @@ fn output_option_and_no_backup() {
     let (out, _) = run(
         &dir,
         &[
+            "plhs",
             "--add",
             "2",
             "--no-backup",
@@ -124,18 +125,18 @@ fn validation_errors_exit_1() {
     let dir = temp_dir("invalid");
     let file = dir.join("bad.json");
     fs::write(&file, "{ not json").unwrap();
-    let (out, _) = run(&dir, &["--add", "2", "bad.json"]);
+    let (out, _) = run(&dir, &["plhs", "--add", "2", "bad.json"]);
     assert_eq!(out.status.code(), Some(1));
 
     fs::write(&file, fixture()).unwrap();
-    let (out, _) = run(&dir, &["--add", "0", "bad.json"]);
+    let (out, _) = run(&dir, &["plhs", "--add", "0", "bad.json"]);
     assert_eq!(out.status.code(), Some(1));
 
     // scope missing an entry for a declared parameter
     let mut root: Value = serde_json::from_str(&fixture()).unwrap();
     root["scope"].as_array_mut().unwrap().pop();
     fs::write(&file, serde_json::to_string(&root).unwrap()).unwrap();
-    let (out, _) = run(&dir, &["--add", "2", "bad.json"]);
+    let (out, _) = run(&dir, &["plhs", "--add", "2", "bad.json"]);
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("scope"), "stderr: {stderr}");
@@ -148,7 +149,7 @@ fn explore_mode_covers_the_whole_surface() {
     let file = dir.join("designs.json");
     fs::write(&file, fixture()).unwrap();
 
-    let (out, stdout) = run(&dir, &["--explore", "2", "designs.json"]);
+    let (out, stdout) = run(&dir, &["plhs", "--explore", "2", "designs.json"]);
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -188,7 +189,7 @@ fn explore_mode_covers_the_whole_surface() {
     // scoped --add run: the mode genuinely changes the outcome
     let add_file = dir.join("add.json");
     fs::write(&add_file, fixture()).unwrap();
-    let (out, _) = run(&dir, &["--add", "2", add_file.to_str().unwrap()]);
+    let (out, _) = run(&dir, &["plhs", "--add", "2", add_file.to_str().unwrap()]);
     assert!(out.status.success());
     let add_root: Value = serde_json::from_str(&fs::read_to_string(&add_file).unwrap()).unwrap();
     let differs = new
@@ -206,13 +207,16 @@ fn explore_and_add_are_mutually_exclusive() {
     fs::write(&file, fixture()).unwrap();
 
     // both modes given
-    let (out, _) = run(&dir, &["--add", "2", "--explore", "1", "designs.json"]);
+    let (out, _) = run(
+        &dir,
+        &["plhs", "--add", "2", "--explore", "1", "designs.json"],
+    );
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("mutually exclusive"), "stderr: {stderr}");
 
     // neither mode given
-    let (out, _) = run(&dir, &["designs.json"]);
+    let (out, _) = run(&dir, &["plhs", "designs.json"]);
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -221,7 +225,7 @@ fn explore_and_add_are_mutually_exclusive() {
     );
 
     // zero designs in explore mode
-    let (out, _) = run(&dir, &["--explore", "0", "designs.json"]);
+    let (out, _) = run(&dir, &["plhs", "--explore", "0", "designs.json"]);
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("--explore"), "stderr: {stderr}");
@@ -231,7 +235,25 @@ fn explore_and_add_are_mutually_exclusive() {
 #[test]
 fn missing_file_exits_2() {
     let dir = temp_dir("missing");
-    let (out, _) = run(&dir, &["--add", "2", "does-not-exist.json"]);
+    let (out, _) = run(&dir, &["plhs", "--add", "2", "does-not-exist.json"]);
     assert_eq!(out.status.code(), Some(2));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn subcommand_is_required_and_validated() {
+    let dir = temp_dir("subcommand");
+
+    // no subcommand: usage error
+    let (out, _) = run(&dir, &[]);
+    assert_ne!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("subcommand"), "stderr: {stderr}");
+
+    // unknown subcommand
+    let (out, _) = run(&dir, &["nope"]);
+    assert_ne!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("nope"), "stderr: {stderr}");
     fs::remove_dir_all(&dir).ok();
 }
