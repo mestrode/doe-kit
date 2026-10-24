@@ -1,0 +1,14 @@
+[package]
+name = "doe-kit"
+description = "doe: a Design of Experiments command-line toolset"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+clap = { version = "4", features = ["std", "help", "usage", "error-context", "suggestions"] }
+
+[[bin]]
+name = "doe"
+path = "src/main.rs"
