@@ -9,10 +9,13 @@ repository = "https://github.com/mestrode/doe-kit"
 readme = "README.md"
 
 [dependencies]
-serde_json = { version = "1", features = ["preserve_order"] }
 clap = { version = "4", features = ["derive"] }
 plhs = { path = "../plhs" }
 doe-stats = { path = "../../sensitivity/stats" }
+doe-pool = { path = "../../doe-pool" }
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
 
 [[bin]]
 name = "sampling"

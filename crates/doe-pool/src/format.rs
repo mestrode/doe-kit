@@ -8,10 +8,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Number, Value};
 
-use plhs::error::{Error, Result};
-use plhs::{Design, Parameter};
+use doe_types::error::{Error, Result};
+use doe_types::{Design, Parameter};
 
-use doe_stats::Results;
+use doe_types::Results;
 
 fn invalid(msg: impl Into<String>) -> Error {
     Error::Invalid(msg.into())

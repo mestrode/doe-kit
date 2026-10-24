@@ -18,7 +18,10 @@ All changes go through pull requests. Direct commits to `main` are not accepted.
 This is a Cargo workspace. Crates are organized by domain:
 
 - `crates/doe-kit` — the `doe` CLI crate (binary name: `doe`)
-- `crates/doe-types` — shared pool/design types
+- `crates/doe-types` — shared pool data types: parameters, distributions,
+  designs, results, and the workspace-wide error types
+- `crates/doe-pool` — the pool file format crate (`doe-pool`): read,
+  parse, backup and write the JSON design pool
 - `crates/sampling/bin` — the `sampling` CLI crate (`doe-sampling`, binary
   name: `sampling`; one subcommand per sampling method)
 - `crates/sampling/*` — sampling method crates (`plhs`, ...)
@@ -58,6 +61,8 @@ cadence; publication to crates.io is manual and per crate.
 - `sampling stats` reports statistics only: it writes no files and makes
   no recommendations; the judgment stays with the user.
 - Input files are backed up to `<file>.bak` unless `--no-backup` is given.
+- Pool files are read, parsed and written through the `doe-pool` crate; do
+  not reimplement pool file handling in another crate or binary.
 - New user-facing functionality goes behind subcommands of the `doe` CLI;
   per-crate binaries are transitional.
 

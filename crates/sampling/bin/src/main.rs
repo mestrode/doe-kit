@@ -12,14 +12,10 @@
 //! split and decile means. It is read-only judgment support before
 //! expensive simulations are run.
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
-mod json;
-
 use clap::{Args, Parser, Subcommand};
-use serde_json::Value;
 
 #[derive(Parser)]
 #[command(
@@ -124,6 +120,13 @@ fn validation(e: plhs::Error) -> CliError {
     CliError::Validation(e.to_string())
 }
 
+fn pool(e: doe_pool::Error) -> CliError {
+    match e {
+        doe_pool::Error::Validation(e) => CliError::Validation(e.to_string()),
+        doe_pool::Error::Io(e) => CliError::Io(e),
+    }
+}
+
 fn run(args: &PlhsArgs) -> Result<String, CliError> {
     // exactly one mode: scoped refinement or whole-surface exploration
     let (verb, m, explore) = match (args.add, args.explore) {
@@ -146,11 +149,9 @@ fn run(args: &PlhsArgs) -> Result<String, CliError> {
             mode = if explore { "--explore" } else { "--add" }
         )));
     }
-    let bytes = fs::read(&args.file).map_err(CliError::Io)?;
-    let mut root: Value = serde_json::from_slice(&bytes)
-        .map_err(|e| CliError::Validation(format!("invalid JSON: {e}")))?;
-    let params = json::parse_params(&root).map_err(validation)?;
-    let designs = json::parse_designs(&root, &params).map_err(validation)?;
+    let (bytes, mut root) = doe_pool::read(&args.file).map_err(pool)?;
+    let params = doe_pool::format::parse_params(&root).map_err(validation)?;
+    let designs = doe_pool::format::parse_designs(&root, &params).map_err(validation)?;
     let aug = if explore {
         plhs::explore(&params, &designs, m, args.seed, args.cap).map_err(validation)?
     } else {
@@ -158,16 +159,14 @@ fn run(args: &PlhsArgs) -> Result<String, CliError> {
     };
 
     if !args.no_backup {
-        let mut backup = args.file.clone().into_os_string();
-        backup.push(".bak");
-        fs::write(Path::new(&backup), &bytes).map_err(CliError::Io)?;
+        doe_pool::backup(&args.file, &bytes).map_err(pool)?;
     }
 
-    json::append_new_designs(&mut root, &params, &aug.new_designs).map_err(validation)?;
-    let out_bytes = serde_json::to_vec_pretty(&root)
-        .map_err(|e| CliError::Validation(format!("serialization failed: {e}")))?;
+    doe_pool::format::append_new_designs(&mut root, &params, &aug.new_designs)
+        .map_err(validation)?;
+    let out_bytes = doe_pool::serialize(&root).map_err(pool)?;
     let out = args.output.clone().unwrap_or_else(|| args.file.clone());
-    write_atomic(&out, &out_bytes)?;
+    doe_pool::write_atomic(&out, &out_bytes).map_err(pool)?;
 
     Ok(format!(
         "{verb} {} designs (iteration {}), score {:.6}",
@@ -180,12 +179,10 @@ fn run(args: &PlhsArgs) -> Result<String, CliError> {
 /// Analyzes the evaluated results of the pool and formats the statistics
 /// report. Read-only: no files are written.
 fn run_stats(args: &StatsArgs) -> Result<String, CliError> {
-    let bytes = fs::read(&args.file).map_err(CliError::Io)?;
-    let root: Value = serde_json::from_slice(&bytes)
-        .map_err(|e| CliError::Validation(format!("invalid JSON: {e}")))?;
-    let params = json::parse_params(&root).map_err(validation)?;
-    let designs = json::parse_designs(&root, &params).map_err(validation)?;
-    let results = json::parse_results(&root).map_err(validation)?;
+    let (_, root) = doe_pool::read(&args.file).map_err(pool)?;
+    let params = doe_pool::format::parse_params(&root).map_err(validation)?;
+    let designs = doe_pool::format::parse_designs(&root, &params).map_err(validation)?;
+    let results = doe_pool::format::parse_results(&root).map_err(validation)?;
     let stats = doe_stats::analyze(&params, &designs, &results).map_err(validation)?;
     Ok(format_stats_report(&stats, designs.len(), results.len()))
 }
@@ -242,20 +239,4 @@ fn format_stats_report(
         }
     }
     out.trim_end().to_owned()
-}
-
-/// Writes via a temporary file and an atomic rename, so the output file is
-/// either the old or the new content, never a partial write.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
-    let mut tmp = path.as_os_str().to_os_string();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    fs::write(&tmp, bytes).map_err(CliError::Io)?;
-    match fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = fs::remove_file(&tmp);
-            Err(CliError::Io(e))
-        }
-    }
 }

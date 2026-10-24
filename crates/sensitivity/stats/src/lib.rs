@@ -20,19 +20,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use plhs::error::{Error, Result};
+use doe_types::error::{Error, Result};
+use doe_types::{Design, Parameter};
 use plhs::scoring::pearson;
-use plhs::{Design, Parameter};
 
-/// One evaluated design: the numeric fields of its result entry.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Results {
-    /// Design name; must match a design in the pool.
-    pub name: String,
-    /// Numeric result variables (e.g. `energy: 42.1`). Non-numeric fields
-    /// are the caller's business and never reach this type.
-    pub values: BTreeMap<String, f64>,
-}
+pub use doe_types::Results;
 
 /// Descriptive statistics of one result variable.
 #[derive(Debug, Clone, PartialEq)]

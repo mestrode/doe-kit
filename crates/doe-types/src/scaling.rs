@@ -143,10 +143,10 @@ impl Parameter {
         x >= self.scope_min && x <= self.scope_max
     }
 
-    /// Returns a copy of this parameter as it is treated by [`explore`
-    /// mode](crate::explore): uniform distribution over the full definition
-    /// range `[min, max]`, ignoring any scope and any declared
-    /// non-uniform distribution.
+    /// Returns a copy of this parameter as it is treated by explore mode
+    /// (`plhs::explore`): uniform distribution over the full definition
+    /// range `[min, max]`, ignoring any scope and any declared non-uniform
+    /// distribution.
     pub fn full_surface(&self) -> Self {
         let mut full = self.clone();
         full.distribution = Distribution::Uniform;
@@ -207,7 +207,7 @@ pub fn normal_cdf(x: f64) -> f64 {
 /// Requires `p` strictly inside `(0, 1)`.
 pub fn normal_cdf_inv(p: f64) -> f64 {
     debug_assert!((0.0..=1.0).contains(&p));
-    let (mut lo, mut hi) = (-40.0_f64, 40.0_f64);
+    let (mut lo, mut hi) = (-40.0_f64, 40.0);
     for _ in 0..100 {
         let mid = 0.5 * (lo + hi);
         if normal_cdf(mid) < p {

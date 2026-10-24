@@ -6,8 +6,10 @@ model of experiment designs; the `doe` command-line tool ties them together.
 ## Crates
 
 - `doe-kit` — the `doe` command-line tool
-- `doe-types` — shared pool/design data types (placeholder; types land with
-  the sampling crate)
+- `doe-types` — shared pool data types: parameters, distributions, designs,
+  results, and the workspace-wide error types
+- `doe-pool` — the pool file format: read, parse, backup and write the JSON
+  design pool (`crates/doe-pool`)
 - `doe-sampling` — the `sampling` command-line tool, one subcommand per
   sampling method (`crates/sampling/bin`)
 - `crates/sampling/*` — sampling method crates (`plhs`, pooled Latin

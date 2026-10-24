@@ -5,3 +5,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+
+[dependencies]
+thiserror = "2"
+
+[lib]
+name = "doe_types"
+path = "src/lib.rs"

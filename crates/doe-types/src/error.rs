@@ -1,8 +1,8 @@
-//! Error types for [`plhs`](crate).
+//! Error types for the doe-kit workspace.
 
 use thiserror::Error;
 
-/// Result alias used throughout the crate.
+/// Result alias used throughout the workspace.
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors produced while validating input or sampling.
@@ -36,7 +36,8 @@ pub enum Error {
     #[error("{0}")]
     Invalid(String),
 
-    /// An internal invariant was violated; this indicates a bug in `plhs`.
+    /// An internal invariant was violated; this indicates a bug in the
+    /// sampling code.
     #[error("internal invariant violated: {0}")]
     Invariant(String),
 }
