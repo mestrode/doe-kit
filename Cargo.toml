@@ -1,26 +1,9 @@
-[package]
-name = "plhs"
+[workspace]
+resolver = "3"
+members = ["crates/doe-kit", "crates/doe-types"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Pooled Latin Hypercube Sampling: augment a pool of experiment designs with low-correlation designs scoped to a per-parameter sub-range"
 license = "MIT"
-repository = "https://github.com/mestrode/plhs"
-readme = "README.md"
-keywords = ["lhs", "sampling", "doe", "experiment", "design"]
-categories = ["science", "mathematics", "simulation"]
-
-[dependencies]
-serde_json = { version = "1", features = ["preserve_order"] }
-clap = { version = "4", features = ["derive"] }
-rand = "0.9"
-rand_chacha = "0.9"
-thiserror = "2"
-
-[lib]
-name = "plhs"
-path = "src/lib.rs"
-
-[[bin]]
-name = "plhs"
-path = "src/main.rs"
