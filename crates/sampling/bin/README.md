@@ -8,11 +8,12 @@ one subcommand per method. The crate is named `doe-sampling` because
 cargo install doe-sampling
 ```
 
-Currently available methods:
+Currently available subcommands:
 
-| Subcommand | Method |
+| Subcommand | Purpose |
 | --- | --- |
 | `plhs` | pooled Latin Hypercube Sampling (the `plhs` crate) |
+| `stats` | statistical analysis of evaluated results (the `doe-stats` crate) |
 
 ## Usage
 
@@ -48,6 +49,31 @@ interesting sections.
 
 Exit codes: `0` success, `1` validation error, `2` I/O error (missing
 subcommand or unknown subcommand: usage error).
+
+## Judging results before expensive simulations: `sampling stats`
+
+```sh
+sampling stats designs.json
+```
+
+Read-only statistical analysis of the evaluated `results` (nothing is
+written, the input file is untouched). Per numeric result variable (any
+numeric field on a result entry, e.g. `energy`):
+
+1. Coverage: how many of the pool's designs are evaluated.
+2. Descriptive statistics: n, min, max, mean, median, sample std.
+3. Per parameter: Pearson and Spearman correlation between the parameter
+   value and the result (n/a below 3 evaluated designs or without
+   variance — Spearman catches monotonic-but-nonlinear trends).
+4. Per parameter: result mean/std inside the current scope vs outside it
+   (printed only when evaluated designs exist outside the scope).
+5. Per parameter: result mean per decile (10 equal-width bins) of the
+   definition range.
+
+The tool reports statistics; the judgment — run expensive simulations or
+not, where to set the scope for `--add` — stays with you. Exit codes as
+above; `results` empty or a result name that matches no design is a
+validation error (exit 1).
 
 ## JSON format
 

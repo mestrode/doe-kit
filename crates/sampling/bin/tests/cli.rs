@@ -257,3 +257,80 @@ fn subcommand_is_required_and_validated() {
     assert!(stderr.contains("nope"), "stderr: {stderr}");
     fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn stats_reports_variables_and_coverage() {
+    let dir = temp_dir("stats");
+    let file = dir.join("designs.json");
+    fs::write(&file, fixture()).unwrap();
+
+    let (out, stdout) = run(&dir, &["stats", "designs.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("pool: 30 designs, 3 evaluated"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("energy: n=3,"), "stdout: {stdout}");
+    assert!(stdout.contains("pearson"), "stdout: {stdout}");
+    assert!(stdout.contains("deciles"), "stdout: {stdout}");
+
+    // read-only: the input file is untouched
+    assert_eq!(fs::read_to_string(&file).unwrap(), fixture());
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn stats_without_results_exits_1() {
+    let dir = temp_dir("stats-empty");
+    let file = dir.join("designs.json");
+    let mut root: Value = serde_json::from_str(&fixture()).unwrap();
+    root["results"] = Value::Array(vec![]);
+    fs::write(&file, serde_json::to_string(&root).unwrap()).unwrap();
+
+    let (out, _) = run(&dir, &["stats", "designs.json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no results"), "stderr: {stderr}");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn stats_unknown_result_name_exits_1() {
+    let dir = temp_dir("stats-unknown");
+    let file = dir.join("designs.json");
+    let mut root: Value = serde_json::from_str(&fixture()).unwrap();
+    root["results"][0]["name"] = Value::String("99.1".to_owned());
+    fs::write(&file, serde_json::to_string(&root).unwrap()).unwrap();
+
+    let (out, _) = run(&dir, &["stats", "designs.json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("does not match any design"),
+        "stderr: {stderr}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn stats_ignores_non_numeric_result_fields() {
+    let dir = temp_dir("stats-nonnumeric");
+    let file = dir.join("designs.json");
+    let mut root: Value = serde_json::from_str(&fixture()).unwrap();
+    root["results"][0]["comment"] = Value::String("ok".to_owned());
+    fs::write(&file, serde_json::to_string(&root).unwrap()).unwrap();
+
+    let (out, stdout) = run(&dir, &["stats", "designs.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!stdout.contains("comment"), "stdout: {stdout}");
+    assert!(stdout.contains("energy"), "stdout: {stdout}");
+    fs::remove_dir_all(&dir).ok();
+}

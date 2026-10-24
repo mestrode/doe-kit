@@ -12,6 +12,7 @@ readme = "README.md"
 serde_json = { version = "1", features = ["preserve_order"] }
 clap = { version = "4", features = ["derive"] }
 plhs = { path = "../plhs" }
+doe-stats = { path = "../../sensitivity/stats" }
 
 [[bin]]
 name = "sampling"

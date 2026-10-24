@@ -12,6 +12,8 @@ model of experiment designs; the `doe` command-line tool ties them together.
   sampling method (`crates/sampling/bin`)
 - `crates/sampling/*` — sampling method crates (`plhs`, pooled Latin
   Hypercube Sampling)
+- `doe-stats` — statistical analysis of evaluated results
+  (`crates/sensitivity/stats`), used by `sampling stats`
 
 ## Development
 
