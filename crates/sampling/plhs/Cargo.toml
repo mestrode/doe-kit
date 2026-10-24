@@ -13,7 +13,7 @@ categories = ["science", "mathematics", "simulation"]
 [dependencies]
 rand = "0.9"
 rand_chacha = "0.9"
-thiserror = "2"
+doe-types = { path = "../../doe-types" }
 
 [lib]
 name = "plhs"

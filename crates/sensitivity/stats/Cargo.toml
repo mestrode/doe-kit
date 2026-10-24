@@ -9,6 +9,7 @@ repository = "https://github.com/mestrode/doe-kit"
 
 [dependencies]
 plhs = { path = "../../sampling/plhs" }
+doe-types = { path = "../../doe-types" }
 
 [lib]
 name = "doe_stats"

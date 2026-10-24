@@ -81,13 +81,12 @@
 //! ```
 
 pub mod binning;
-pub mod error;
-pub mod scaling;
 pub mod scoring;
 pub mod selection;
 
-pub use error::{Error, Result};
-pub use scaling::{Distribution, Parameter};
+pub use doe_types::error;
+pub use doe_types::scaling;
+pub use doe_types::{Design, Distribution, Error, Parameter, Result};
 
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -95,15 +94,6 @@ use rand_chacha::ChaCha8Rng;
 use binning::{bin_count, candidate_t, empty_bins, occupied_bins};
 use scoring::PairSeries;
 use selection::{BinCandidates, select};
-
-/// One design of the experiment: a name and one value per parameter.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Design {
-    /// Design name.
-    pub name: String,
-    /// Values aligned with the parameter slice given to [`augment`].
-    pub values: Vec<f64>,
-}
 
 /// The result of [`augment`].
 #[derive(Debug, Clone)]

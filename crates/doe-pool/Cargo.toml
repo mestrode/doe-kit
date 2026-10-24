@@ -1,0 +1,17 @@
+[package]
+name = "doe-pool"
+description = "The doe-kit pool file format: read, write, and parse the JSON design pool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository = "https://github.com/mestrode/doe-kit"
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+doe-types = { path = "../doe-types" }
+thiserror = "2"
+
+[lib]
+name = "doe_pool"
+path = "src/lib.rs"
