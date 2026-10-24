@@ -11,10 +11,12 @@
 //! (two example parameters, no designs) and refuses to overwrite an
 //! existing file.
 //!
-//! `sampling stats` analyzes the evaluated results of the pool instead:
-//! coverage, descriptive statistics, per-parameter correlations, scope
-//! split and decile means. It is read-only judgment support before
-//! expensive simulations are run.
+//! `sampling stats` analyzes the pool (read-only judgment support before
+//! expensive simulations are run): statistics of the sampling points
+//! themselves — per-parameter descriptive statistics, decile coverage of
+//! the definition range and pairwise parameter correlations — plus, when
+//! results exist, coverage, per-parameter correlations, scope split and
+//! decile means per result variable.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -42,9 +44,9 @@ enum Command {
     /// low-correlation designs, scoped (--add) or whole-surface (--explore)
     #[command(name = "plhs")]
     Plhs(PlhsArgs),
-    /// Statistical analysis of the evaluated results: coverage, descriptive
-    /// statistics, per-parameter correlations, scope split, decile means
-    /// (read-only)
+    /// Statistical analysis of the pool: sampling-point statistics plus,
+    /// when results exist, per-result coverage, correlations, scope
+    /// split and decile means (read-only)
     #[command(name = "stats")]
     Stats(StatsArgs),
 }
@@ -210,26 +212,59 @@ fn run(args: &PlhsArgs) -> Result<String, CliError> {
     ))
 }
 
-/// Analyzes the evaluated results of the pool and formats the statistics
-/// report. Read-only: no files are written.
+/// Analyzes the pool and formats the statistics report: statistics of the
+/// sampling points themselves, plus the evaluated results when any exist.
+/// Read-only: no files are written.
 fn run_stats(args: &StatsArgs) -> Result<String, CliError> {
     let (_, root) = doe_pool::read(&args.file).map_err(pool)?;
     let params = doe_pool::format::parse_params(&root).map_err(validation)?;
     let designs = doe_pool::format::parse_designs(&root, &params).map_err(validation)?;
     let results = doe_pool::format::parse_results(&root).map_err(validation)?;
-    let stats = doe_stats::analyze(&params, &designs, &results).map_err(validation)?;
-    Ok(format_stats_report(&stats, designs.len(), results.len()))
+    // results first: a result name matching no design keeps failing
+    // exactly as before; the sampling points are reported on top
+    let stats = if results.is_empty() {
+        Vec::new()
+    } else {
+        doe_stats::analyze(&params, &designs, &results).map_err(validation)?
+    };
+    let pool = doe_stats::analyze_pool(&params, &designs).map_err(validation)?;
+    Ok(format_stats_report(&pool, &stats, results.len()))
 }
 
-/// Formats the statistics as a human-readable report (one block per result
-/// variable; statistics only, the judgment stays with the reader).
+/// Formats the statistics as a human-readable report: one block for the
+/// sampling points, then one block per result variable. Statistics only,
+/// the judgment stays with the reader.
 fn format_stats_report(
+    pool: &doe_stats::PoolStats,
     stats: &[doe_stats::VariableStats],
-    total: usize,
     evaluated: usize,
 ) -> String {
     let mut out = String::new();
-    out.push_str(&format!("pool: {total} designs, {evaluated} evaluated\n"));
+    out.push_str(&format!(
+        "pool: {} designs, {evaluated} evaluated\n",
+        pool.total
+    ));
+    out.push_str("sampling points:\n");
+    for p in &pool.parameters {
+        out.push_str(&format!(
+            "  {}: n={}, min {:.6}, max {:.6}, mean {:.6}, median {:.6}, std {:.6}\n",
+            p.name, p.n, p.min, p.max, p.mean, p.median, p.std
+        ));
+        let deciles: Vec<String> = p.deciles.iter().map(|c| c.to_string()).collect();
+        out.push_str(&format!("     decile counts: [{}]\n", deciles.join(", ")));
+    }
+    for pair in &pool.pairs {
+        match (pair.pearson, pair.spearman) {
+            (Some(pe), Some(se)) => out.push_str(&format!(
+                "  {} vs {}: pearson {pe:.6}, spearman {se:.6}\n",
+                pair.a, pair.b
+            )),
+            _ => out.push_str(&format!(
+                "  {} vs {}: pearson n/a, spearman n/a (n < 3 or no variance)\n",
+                pair.a, pair.b
+            )),
+        }
+    }
     for v in stats {
         out.push_str(&format!(
             "{}: n={}, min {:.6}, max {:.6}, mean {:.6}, median {:.6}, std {:.6}\n",

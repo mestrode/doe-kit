@@ -8,6 +8,14 @@
 //!
 //! The analysis is statistics only; the judgment stays with the caller.
 //!
+//! Two analyses are provided:
+//!
+//! - [`analyze_pool`]: statistics of the sampling points themselves
+//!   (the pool's designs) — per-parameter descriptive statistics and
+//!   decile coverage of the definition range, plus Pearson and Spearman
+//!   correlation per parameter pair. It answers "how well are the
+//!   generated sampling points distributed, and do they correlate?"
+//!   before anything has been evaluated.
 //! - Per result variable: coverage (evaluated vs total designs) and
 //!   descriptive statistics (min, max, mean, sample std, median).
 //! - Per parameter: Pearson and Spearman correlation with the result
@@ -85,6 +93,149 @@ pub struct Decile {
 
 /// Number of deciles per parameter definition range.
 pub const DECILES: usize = 10;
+
+/// Sampling-point statistics of the pool itself, independent of any
+/// evaluated results.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PoolStats {
+    /// Total designs in the pool.
+    pub total: usize,
+    /// Per-parameter statistics, aligned with the input parameter slice.
+    pub parameters: Vec<ParameterPoolStats>,
+    /// Correlation between the sampling points of each parameter pair
+    /// (`a` precedes `b` in the input parameter order).
+    pub pairs: Vec<PairCorrelation>,
+}
+
+/// Descriptive statistics of one parameter's sampling points.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParameterPoolStats {
+    /// Parameter name.
+    pub name: String,
+    /// Designs in the pool (all of them carry this parameter).
+    pub n: usize,
+    pub min: f64,
+    pub max: f64,
+    pub mean: f64,
+    /// Sample standard deviation (n - 1; 0.0 for n < 2).
+    pub std: f64,
+    pub median: f64,
+    /// Number of sampling points per decile (10 equal-width bins) of the
+    /// definition range — how uniformly the range is covered. Empty
+    /// deciles carry count 0. Always 10 entries.
+    pub deciles: Vec<usize>,
+}
+
+/// Correlation between the sampling points of two parameters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PairCorrelation {
+    /// First parameter of the pair.
+    pub a: String,
+    /// Second parameter of the pair.
+    pub b: String,
+    /// Pearson correlation; `None` when undefined (n < 3, zero variance
+    /// in either series).
+    pub pearson: Option<f64>,
+    /// Spearman rank correlation; same conditions as [`Self::pearson`].
+    pub spearman: Option<f64>,
+}
+
+/// Analyzes the pool's sampling points (`designs`) themselves: how well
+/// they cover each parameter's definition range and how the parameters
+/// correlate with each other. Independent of any evaluated results —
+/// this is what to look at right after `plhs` generated new designs.
+///
+/// # Errors
+///
+/// - `designs` is empty: there is nothing to analyze.
+/// - A design lacks a value for a declared parameter.
+pub fn analyze_pool(params: &[Parameter], designs: &[Design]) -> Result<PoolStats> {
+    if designs.is_empty() {
+        return Err(Error::Invalid("no designs to analyze".to_owned()));
+    }
+    let p = params.len();
+    for design in designs {
+        if design.values.len() != p {
+            return Err(Error::Invalid(format!(
+                "design '{}' has {} value(s), expected one per parameter ({p})",
+                design.name,
+                design.values.len()
+            )));
+        }
+    }
+
+    let correlation = |xs: &[f64], ys: &[f64], n: usize| -> Option<f64> {
+        if n < 3 || variance_is_zero(xs) || variance_is_zero(ys) {
+            return None;
+        }
+        Some(pearson(xs, ys))
+    };
+
+    let mut parameters = Vec::with_capacity(p);
+    for (j, param) in params.iter().enumerate() {
+        let xs: Vec<f64> = designs.iter().map(|d| d.values[j]).collect();
+        let (min, max, mean, std, median) = descriptive(&xs);
+        let width = (param.max - param.min) / DECILES as f64;
+        let mut deciles = vec![0usize; DECILES];
+        for d in designs {
+            let x = d.values[j];
+            let bin = if x >= param.max {
+                DECILES - 1
+            } else {
+                ((x - param.min) / width) as usize
+            };
+            deciles[bin] += 1;
+        }
+        parameters.push(ParameterPoolStats {
+            name: param.name.clone(),
+            n: xs.len(),
+            min,
+            max,
+            mean,
+            std,
+            median,
+            deciles,
+        });
+    }
+
+    let n = designs.len();
+    let mut pairs = Vec::with_capacity(p * (p - 1) / 2);
+    for a in 0..p {
+        for b in (a + 1)..p {
+            let xs: Vec<f64> = designs.iter().map(|d| d.values[a]).collect();
+            let ys: Vec<f64> = designs.iter().map(|d| d.values[b]).collect();
+            let pearson = correlation(&xs, &ys, n);
+            let spearman = correlation(&ranks(&xs), &ranks(&ys), n);
+            pairs.push(PairCorrelation {
+                a: params[a].name.clone(),
+                b: params[b].name.clone(),
+                pearson,
+                spearman,
+            });
+        }
+    }
+
+    Ok(PoolStats {
+        total: designs.len(),
+        parameters,
+        pairs,
+    })
+}
+
+/// (min, max, mean, sample std, median) of a finite series.
+fn descriptive(xs: &[f64]) -> (f64, f64, f64, f64, f64) {
+    let n = xs.len();
+    let mut sorted = xs.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).expect("values are finite"));
+    let mean = xs.iter().sum::<f64>() / n as f64;
+    let std = mean_std(xs).std;
+    let median = if n % 2 == 1 {
+        sorted[n / 2]
+    } else {
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+    };
+    (sorted[0], sorted[n - 1], mean, std, median)
+}
 
 /// Analyzes the evaluated `results` against the pool (`params`, `designs`).
 ///
@@ -489,6 +640,97 @@ mod tests {
                 mean: None
             }
         );
+    }
+
+    #[test]
+    fn pool_analysis_rejects_an_empty_pool() {
+        let params = vec![param("x", 0.0, 10.0)];
+        let err = analyze_pool(&params, &[]).unwrap_err();
+        assert!(err.to_string().contains("no designs to analyze"));
+    }
+
+    #[test]
+    fn pool_analysis_rejects_designs_with_wrong_length() {
+        let params = vec![param("x", 0.0, 10.0)];
+        let bad = Design {
+            name: "0.1".to_owned(),
+            values: vec![1.0, 2.0],
+        };
+        assert!(analyze_pool(&params, &[bad]).is_err());
+    }
+
+    #[test]
+    fn pool_analysis_describes_each_parameter() {
+        let params = vec![param("x", 0.0, 10.0)];
+        let designs: Vec<Design> = [0.5, 1.5, 5.0, 9.9]
+            .into_iter()
+            .enumerate()
+            .map(|(i, x)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![x],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &designs).unwrap();
+        assert_eq!(pool.total, 4);
+        let p = &pool.parameters[0];
+        assert_eq!(p.name, "x");
+        assert_eq!(p.n, 4);
+        assert_eq!(p.min, 0.5);
+        assert_eq!(p.max, 9.9);
+        assert!((p.mean - 4.225).abs() < 1e-12);
+        assert!((p.std - (54.1075_f64 / 3.0).sqrt()).abs() < 1e-12);
+        assert!((p.median - 3.25).abs() < 1e-12);
+        // one point per occupied decile of [0, 10]: bins 0, 1, 5, 9
+        assert_eq!(p.deciles, vec![1, 1, 0, 0, 0, 1, 0, 0, 0, 1]);
+        // no pairs with a single parameter
+        assert!(pool.pairs.is_empty());
+    }
+
+    #[test]
+    fn pool_analysis_correlates_parameter_pairs() {
+        let params = vec![param("x", 0.0, 10.0), param("y", 0.0, 10.0)];
+        // y = 2x: perfectly linear pair
+        let linear: Vec<Design> = [1.0, 2.0, 3.0, 4.0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, x)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![x, 2.0 * x],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &linear).unwrap();
+        assert_eq!(pool.pairs.len(), 1);
+        let pair = &pool.pairs[0];
+        assert_eq!(pair.a, "x");
+        assert_eq!(pair.b, "y");
+        assert!((pair.pearson.unwrap() - 1.0).abs() < 1e-12);
+        assert!((pair.spearman.unwrap() - 1.0).abs() < 1e-12);
+
+        // fewer than 3 designs: correlations are undefined
+        let short: Vec<Design> = [1.0, 2.0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, x)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![x, 2.0 * x],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &short).unwrap();
+        assert_eq!(pool.pairs[0].pearson, None);
+        assert_eq!(pool.pairs[0].spearman, None);
+
+        // a parameter without variance: correlations are undefined
+        let flat: Vec<Design> = [5.0, 5.0, 5.0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, x)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![x, i as f64],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &flat).unwrap();
+        assert_eq!(pool.pairs[0].pearson, None);
+        assert_eq!(pool.pairs[0].spearman, None);
     }
 
     #[test]

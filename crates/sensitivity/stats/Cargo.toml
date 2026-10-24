@@ -1,6 +1,6 @@
 [package]
 name = "doe-stats"
-description = "Statistical analysis of evaluated Design of Experiments results"
+description = "Statistical analysis of Design of Experiments pools: sampling points and evaluated results"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
