@@ -7,6 +7,10 @@
 //! full definition range). The result is written back (same file by
 //! default, with a `.bak` backup of the input unless disabled).
 //!
+//! `sampling init` writes a new pool file from the doe-pool skeleton
+//! (two example parameters, no designs) and refuses to overwrite an
+//! existing file.
+//!
 //! `sampling stats` analyzes the evaluated results of the pool instead:
 //! coverage, descriptive statistics, per-parameter correlations, scope
 //! split and decile means. It is read-only judgment support before
@@ -30,6 +34,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Write a new pool file with two example parameters and no designs;
+    /// refuses to overwrite an existing file
+    #[command(name = "init")]
+    Init(InitArgs),
     /// Pooled Latin Hypercube Sampling: augment a design pool with
     /// low-correlation designs, scoped (--add) or whole-surface (--explore)
     #[command(name = "plhs")]
@@ -39,6 +47,12 @@ enum Command {
     /// (read-only)
     #[command(name = "stats")]
     Stats(StatsArgs),
+}
+
+#[derive(Args)]
+struct InitArgs {
+    /// Output file; must not already exist.
+    file: PathBuf,
 }
 
 #[derive(Args)]
@@ -76,6 +90,7 @@ struct StatsArgs {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
+        Command::Init(args) => run_init(&args),
         Command::Plhs(args) => run(&args),
         Command::Stats(args) => run_stats(&args),
     };
@@ -125,6 +140,25 @@ fn pool(e: doe_pool::Error) -> CliError {
         doe_pool::Error::Validation(e) => CliError::Validation(e.to_string()),
         doe_pool::Error::Io(e) => CliError::Io(e),
     }
+}
+
+/// Writes a new pool file from the doe-pool skeleton. Refuses to overwrite
+/// an existing target (validation error, exit 1); other I/O failures exit
+/// 2 as usual.
+fn run_init(args: &InitArgs) -> Result<String, CliError> {
+    if args.file.exists() {
+        return Err(CliError::Validation(format!(
+            "'{}' already exists",
+            args.file.display()
+        )));
+    }
+    let root = doe_pool::skeleton();
+    let bytes = doe_pool::serialize(&root).map_err(pool)?;
+    doe_pool::write_atomic(&args.file, &bytes).map_err(pool)?;
+    Ok(format!(
+        "initialized '{}' with 2 example parameters (edit 'params' before use)",
+        args.file.display()
+    ))
 }
 
 fn run(args: &PlhsArgs) -> Result<String, CliError> {

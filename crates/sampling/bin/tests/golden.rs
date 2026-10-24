@@ -1,6 +1,5 @@
-//! Golden tests: the `sampling plhs` subcommand on the committed fixture
-//! with the pinned default seed must reproduce the committed expected
-//! outputs byte-for-byte.
+//! Golden tests: the `sampling` binary on the committed fixtures must
+//! reproduce the committed expected outputs byte-for-byte.
 
 use std::fs;
 use std::path::Path;
@@ -56,4 +55,35 @@ fn golden_explore_output_is_reproduced_by_the_binary() {
         &["plhs", "--explore", "2", "designs.json"],
         "tests/fixtures/expected_explore.json",
     );
+}
+
+#[test]
+fn golden_init_output_is_reproduced_by_the_binary() {
+    let dir = std::env::temp_dir().join(format!("sampling-golden-init-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+
+    // init refuses to overwrite, so the target file must not pre-exist;
+    // the shared helper seeds the file first, hence a direct invocation
+    let out = Command::new(BIN)
+        .args(["init", "designs.json"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // byte-for-byte: the skeleton is static, so the created file must
+    // match the committed fixture exactly
+    let produced = fs::read_to_string(dir.join("designs.json")).unwrap();
+    let expected = fs::read_to_string("tests/fixtures/expected_init.json").unwrap();
+    assert_eq!(
+        produced, expected,
+        "init output differs; if the skeleton changed intentionally, \
+         regenerate tests/fixtures/expected_init.json with the sampling binary"
+    );
+    fs::remove_dir_all(&dir).ok();
 }

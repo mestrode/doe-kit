@@ -317,6 +317,25 @@ fn stats_unknown_result_name_exits_1() {
 }
 
 #[test]
+fn init_refuses_an_existing_file() {
+    let dir = temp_dir("init-exists");
+    let file = dir.join("designs.json");
+    fs::write(&file, "sentinel").unwrap();
+
+    let (out, _) = run(&dir, &["init", "designs.json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("error: 'designs.json' already exists"),
+        "stderr: {stderr}"
+    );
+
+    // the existing file is left untouched
+    assert_eq!(fs::read_to_string(&file).unwrap(), "sentinel");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn stats_ignores_non_numeric_result_fields() {
     let dir = temp_dir("stats-nonnumeric");
     let file = dir.join("designs.json");
