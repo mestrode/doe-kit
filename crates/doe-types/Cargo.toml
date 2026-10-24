@@ -1,1 +1,7 @@
-[object Object]
+[package]
+name = "doe-types"
+description = "Shared Design of Experiments pool types for the doe-kit workspace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
