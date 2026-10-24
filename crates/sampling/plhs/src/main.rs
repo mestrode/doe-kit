@@ -8,10 +8,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod json;
+
 use clap::Parser;
 use serde_json::Value;
-
-use plhs::json;
 
 #[derive(Parser)]
 #[command(

@@ -8,9 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Number, Value};
 
-use crate::Design;
-use crate::error::{Error, Result};
-use crate::scaling::Parameter;
+use plhs::error::{Error, Result};
+use plhs::{Design, Parameter};
 
 fn invalid(msg: impl Into<String>) -> Error {
     Error::Invalid(msg.into())

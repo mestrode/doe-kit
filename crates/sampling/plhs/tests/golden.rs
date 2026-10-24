@@ -1,34 +1,37 @@
-//! Golden test: the full pipeline on the committed fixture with a pinned seed
-//! must reproduce the committed expected output byte-for-byte.
+//! Golden test: the `plhs` binary on the committed fixture with the pinned
+//! default seed must reproduce the committed expected output byte-for-byte.
 
 use std::fs;
-use std::path::Path;
+use std::process::Command;
 
-use serde_json::Value;
-
-use plhs::json;
-
-const M: usize = 2;
-const SEED: u64 = 42;
-const CAP: u64 = 1_000_000;
+const BIN: &str = env!("CARGO_BIN_EXE_plhs");
 
 #[test]
-fn golden_output_is_reproduced() {
-    let input = fs::read_to_string(Path::new("tests/fixtures/input.json")).unwrap();
-    let expected = fs::read_to_string(Path::new("tests/fixtures/expected.json")).unwrap();
+fn golden_output_is_reproduced_by_the_binary() {
+    let dir = std::env::temp_dir().join(format!("plhs-golden-test-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("designs.json");
+    fs::write(&input, fs::read("tests/fixtures/input.json").unwrap()).unwrap();
 
-    let mut root: Value = serde_json::from_str(&input).unwrap();
-    let params = json::parse_params(&root).unwrap();
-    let designs = json::parse_designs(&root, &params).unwrap();
-    let aug = plhs::augment(&params, &designs, M, SEED, CAP).unwrap();
-    json::append_new_designs(&mut root, &params, &aug.new_designs).unwrap();
-    let output = serde_json::to_vec_pretty(&root).unwrap();
+    let out = Command::new(BIN)
+        .args(["--add", "2", "designs.json"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
-    // byte-for-byte: same code, same input, same seed => same output
+    // byte-for-byte: same binary, same input, same seed => same output
+    let produced = fs::read_to_string(dir.join("designs.json")).unwrap();
+    let expected = fs::read_to_string("tests/fixtures/expected.json").unwrap();
     assert_eq!(
-        String::from_utf8(output).unwrap(),
-        expected,
+        produced, expected,
         "golden output differs; if the algorithm changed intentionally, \
          regenerate tests/fixtures/expected.json with the plhs binary"
     );
+    fs::remove_dir_all(&dir).ok();
 }

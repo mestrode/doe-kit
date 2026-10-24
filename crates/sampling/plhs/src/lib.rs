@@ -50,7 +50,6 @@
 
 pub mod binning;
 pub mod error;
-pub mod json;
 pub mod scaling;
 pub mod scoring;
 pub mod selection;
