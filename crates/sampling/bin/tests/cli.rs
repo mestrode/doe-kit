@@ -679,3 +679,111 @@ fn stats_json_without_results_has_empty_results_array() {
     assert_eq!(v["pool"]["total"], 30);
     fs::remove_dir_all(&dir).ok();
 }
+
+fn wide_pool(params: usize, scope: Option<(f64, f64)>) -> String {
+    let mut root = serde_json::json!({
+        "params": (0..params)
+            .map(|j| serde_json::json!({
+                "name": format!("p{j}"),
+                "min": 0,
+                "max": 10,
+                "distribution": "uniform",
+            }))
+            .collect::<Vec<_>>(),
+        "designs": [],
+    });
+    if let Some((min, max)) = scope {
+        root["scope"] = serde_json::json!(
+            (0..params)
+                .map(|j| serde_json::json!({
+                    "name": format!("p{j}"),
+                    "min": min,
+                    "max": max,
+                }))
+                .collect::<Vec<_>>()
+        );
+    }
+    serde_json::to_string(&root).unwrap()
+}
+
+#[test]
+fn explore_on_50_parameters_is_batched() {
+    // regression for issue #22: a fresh 50-parameter pool used to fail on
+    // the greedy cross-product guard (6^50 combinations); batching splits
+    // the run into one-design chunks and the run succeeds
+    let dir = temp_dir("explore-50");
+    let file = dir.join("designs.json");
+    fs::write(&file, wide_pool(50, None)).unwrap();
+
+    // human report works and keeps its wording
+    let (out, stdout) = run(&dir, &["plhs", "--explore", "6", "designs.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.starts_with("explored 6 designs (iteration 1), score "),
+        "unexpected summary: {stdout}"
+    );
+
+    // a second fresh pool for the JSON report: one line, the new keys
+    let file = dir.join("fresh.json");
+    fs::write(&file, wide_pool(50, None)).unwrap();
+    let (out, stdout) = run(&dir, &["plhs", "--explore", "6", "--json", "fresh.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(stdout.lines().count(), 1, "stdout: {stdout}");
+    let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
+    assert_eq!(v["m"], 6);
+    assert_eq!(v["chunks"], 6, "50 parameters must batch to m=1 chunks");
+    assert_eq!(v["strategy"], "exact");
+    assert_eq!(v["designs_after"], 6);
+    assert_eq!(v["n_params"], 50);
+
+    // the pool grew by the 6 new designs
+    let root: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    let designs = root["designs"].as_array().unwrap();
+    assert_eq!(designs.len(), 6);
+    assert_eq!(designs[0]["name"], "1.1");
+    // a design carries its name plus one value per parameter
+    assert_eq!(designs[0].as_object().unwrap().len(), 51);
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn add_on_50_parameters_with_scope_is_batched() {
+    // the scoped refinement path takes the same batching; the values
+    // stay inside the scope
+    let dir = temp_dir("add-50-scope");
+    let file = dir.join("designs.json");
+    fs::write(&file, wide_pool(50, Some((2.0, 8.0)))).unwrap();
+
+    let (out, stdout) = run(&dir, &["plhs", "--add", "4", "--json", "designs.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(stdout.lines().count(), 1, "stdout: {stdout}");
+    let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
+    assert_eq!(v["m"], 4);
+    assert_eq!(v["chunks"], 4);
+    assert_eq!(v["strategy"], "exact");
+    assert_eq!(v["designs_after"], 4);
+
+    let root: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    for design in root["designs"].as_array().unwrap() {
+        for j in 0..50 {
+            let value = design[format!("p{j}")].as_f64().unwrap();
+            assert!(
+                (2.0..=8.0).contains(&value),
+                "value {value} outside the scope"
+            );
+        }
+    }
+    fs::remove_dir_all(&dir).ok();
+}

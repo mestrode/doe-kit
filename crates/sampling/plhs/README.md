@@ -50,6 +50,26 @@ exactly up to the configured cap; beyond that, a deterministic greedy
 fallback places designs one at a time. All computation happens in `[0, 1]`
 space; real values are written only in the output.
 
+### Batching
+
+Large runs are placed in chunks of at most `solvable_batch(p)` new designs,
+the largest batch whose per-step bin cross product `b^p` fits the greedy
+fallback's budget of 10,000,000 combinations — `3162` designs at 2
+parameters, `5` at 10, and `1` at 24 and beyond: the standard-LHS loop of
+one design per chunk, which works for any parameter count. Every chunk
+draws its candidates from the empty bins of the final `n + m` partition —
+re-evaluated against the designs earlier chunks placed — selects
+(exact up to the cap, greedy up to the cross-product budget), and appends.
+When a chunk's empty bins alone would exceed the budget, its candidate set
+is restricted to a random subset of `solvable_batch(p)` empty bins per
+parameter, so a chunk search always fits. A batched run therefore always
+succeeds where a single shot would hit the greedy wall (50 parameters x 6
+empty bins ~ 8.1e38 combinations), and the finished pool keeps one design
+per bin per parameter. A single chunk keeps the historical single-shot
+behaviour, draw for draw. Batched runs report the pooled score over all
+pairs and all new designs, and the aggregate strategy: `exact` or `greedy`
+when every chunk agrees, `mixed` otherwise.
+
 `explore()` runs the same machinery with every parameter treated as
 uniform over its full definition range `[min, max]`: scopes and non-uniform
 distributions are ignored for placement, the bins span the whole range, and

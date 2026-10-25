@@ -45,6 +45,8 @@ pub enum SelectionStrategy {
     Exact,
     /// Greedy sequential selection (above the cap).
     Greedy,
+    /// A batched run whose chunks used different strategies.
+    Mixed,
 }
 
 impl SelectionStrategy {
@@ -53,6 +55,23 @@ impl SelectionStrategy {
         match self {
             Self::Exact => "exact",
             Self::Greedy => "greedy",
+            Self::Mixed => "mixed",
+        }
+    }
+
+    /// The strategy of a batched run over its per-chunk strategies: the
+    /// common strategy when every chunk agrees, mixed when they differ.
+    /// An empty slice reports exact (nothing ran greedily).
+    pub fn aggregate(strategies: &[Self]) -> Self {
+        match strategies.split_first() {
+            None => Self::Exact,
+            Some((first, rest)) => {
+                if rest.iter().all(|s| s == first) {
+                    *first
+                } else {
+                    Self::Mixed
+                }
+            }
         }
     }
 }
@@ -146,6 +165,32 @@ fn perm_count(k: usize, m: usize) -> u128 {
         total = total.saturating_mul(u128::try_from(k - i).unwrap_or(u128::MAX));
     }
     total
+}
+
+/// The largest batch of new designs whose per-step bin cross product
+/// `b^p` stays within the greedy budget ([`GREEDY_CROSS_CAP`]) — the
+/// largest chunk the greedy fallback can search per step. For parameter
+/// counts where even `2^p` exceeds the budget this degenerates to 1: the
+/// standard-LHS loop of one design per chunk.
+pub fn solvable_batch(p: usize) -> usize {
+    let (mut lo, mut hi) = (1usize, GREEDY_CROSS_CAP as usize);
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        if product_exceeds(std::iter::repeat_n(mid as u128, p), GREEDY_CROSS_CAP) {
+            hi = mid - 1;
+        } else {
+            lo = mid;
+        }
+    }
+    lo
+}
+
+/// Whether the per-step empty-bin cross product of the given
+/// per-parameter counts exceeds the greedy budget — the batch loop's
+/// signal to restrict a chunk's candidate set to [`solvable_batch`]
+/// bins per parameter.
+pub(crate) fn empty_cross_exceeds_budget(counts: impl Iterator<Item = usize>) -> bool {
+    product_exceeds(counts.map(|c| c as u128), GREEDY_CROSS_CAP)
 }
 
 // --- exact enumeration ------------------------------------------------------
@@ -330,16 +375,22 @@ fn greedy(m: usize, pairs: &[PairSeries], candidates: &[BinCandidates]) -> Resul
     ) {
         // The true cross product can exceed u128 (50 parameters x 6 empty
         // bins ~ 8.1e38), so no exact count is printed — only its order of
-        // magnitude, alongside the budget the guard compares against.
+        // magnitude, alongside the budget the guard compares against. The
+        // remedies name the real levers: the number of new designs per
+        // step and the parameter count. Narrowing scopes shrinks the
+        // empty-bin count only in the bin-collision case (existing
+        // designs sharing bins); on a valid LHS pool the empty-bin count
+        // per parameter is the number of new designs, and scopes cannot
+        // reduce it.
         let magnitude: f64 = candidates
             .iter()
             .map(|c| (c.bins.len() as f64).log10())
             .sum();
         return Err(Error::Invalid(format!(
             "the greedy fallback would have to search about 10^{} bin combinations per step, \
-             beyond its budget of {GREEDY_CROSS_CAP}; run fewer new designs at a time or \
-             reduce the number of empty bins (a fresh pool starts with every bin empty; \
-             narrowing scopes helps only once designs occupy bins)",
+             beyond its budget of {GREEDY_CROSS_CAP}; reduce the number of new designs per \
+             step or reduce the number of parameters, and narrow the scopes only when the \
+             existing designs share bins",
             magnitude.round() as u64
         )));
     }
@@ -547,6 +598,35 @@ mod tests {
     }
 
     #[test]
+    fn solvable_batch_is_the_largest_batch_within_the_budget() {
+        // b^p <= GREEDY_CROSS_CAP (10_000_000)
+        assert_eq!(solvable_batch(1), 10_000_000, "10_000_000^1 = budget");
+        // 3162^2 = 9_998_244 <= budget, 3163^2 = 10_004_569 > budget
+        assert_eq!(solvable_batch(2), 3162);
+        // 7^8 = 5_764_801 <= budget, 8^8 = 16_777_216 > budget
+        assert_eq!(solvable_batch(8), 7);
+        // 50 parameters: 2^50 already exceeds the budget, so the batch
+        // degenerates to the standard-LHS loop of one design per chunk
+        assert_eq!(solvable_batch(50), 1);
+        // a huge parameter count stays at 1
+        assert_eq!(solvable_batch(500), 1);
+    }
+
+    #[test]
+    fn strategy_aggregate_reports_mixed_when_strategies_differ() {
+        use SelectionStrategy::{Exact, Greedy, Mixed};
+        assert_eq!(SelectionStrategy::aggregate(&[Exact, Exact]), Exact);
+        assert_eq!(
+            SelectionStrategy::aggregate(&[Greedy, Greedy, Greedy]),
+            Greedy
+        );
+        assert_eq!(SelectionStrategy::aggregate(&[Exact]), Exact);
+        assert_eq!(SelectionStrategy::aggregate(&[Greedy, Exact]), Mixed);
+        assert_eq!(SelectionStrategy::aggregate(&[Exact, Exact, Greedy]), Mixed);
+        assert_eq!(Mixed.name(), "mixed");
+    }
+
+    #[test]
     fn greedy_guard_reports_a_magnitude_not_a_saturated_count() {
         // 50 parameters x 6 empty bins each (a fresh pool explored with
         // m = 6): the cross product 6^50 ~ 8.1e38 overflows u128, the old
@@ -571,7 +651,15 @@ mod tests {
         );
         assert!(
             msg.contains("new designs"),
-            "message should name the fresh-pool remedy (fewer new designs): {msg}"
+            "message should name the remedy of fewer new designs: {msg}"
+        );
+        assert!(
+            msg.contains("reduce the number of parameters"),
+            "message should name the parameter count as the real lever: {msg}"
+        );
+        assert!(
+            msg.contains("share bins"),
+            "message should scope the narrow-scopes advice to the bin-collision case: {msg}"
         );
     }
 

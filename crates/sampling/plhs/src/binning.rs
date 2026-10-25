@@ -60,6 +60,23 @@ pub fn candidate_t<R: Rng>(rng: &mut R, bin: usize, bins: usize) -> f64 {
     rng.random_range(lo..hi)
 }
 
+/// Uniformly samples `k` of the given bin indices without replacement,
+/// returned in ascending order. Restricts a chunk's candidate set to a
+/// searchable cross product when the empty bins of all parameters
+/// together exceed the greedy budget.
+pub fn sample_bins<R: Rng>(rng: &mut R, bins: &[usize], k: usize) -> Vec<usize> {
+    debug_assert!(k <= bins.len());
+    let mut pool: Vec<usize> = bins.to_vec();
+    // partial Fisher-Yates: the first k entries are the draw
+    for i in 0..k {
+        let j = rng.random_range(i..pool.len());
+        pool.swap(i, j);
+    }
+    pool.truncate(k);
+    pool.sort_unstable();
+    pool
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +125,21 @@ mod tests {
     #[test]
     fn bin_count_is_in_scope_plus_new() {
         assert_eq!(bin_count(15, 2), 17);
+    }
+
+    #[test]
+    fn sample_bins_draws_distinct_bins_in_ascending_order() {
+        let mut rng = rand::rng();
+        let bins: Vec<usize> = (0..20).collect();
+        let drawn = sample_bins(&mut rng, &bins, 7);
+        assert_eq!(drawn.len(), 7);
+        // ascending and strict (no duplicates)
+        assert!(drawn.windows(2).all(|w| w[0] < w[1]));
+        // a subset of the input bins
+        for &b in &drawn {
+            assert!(bins.contains(&b));
+        }
+        // k = len returns the full set, ascending like the input
+        assert_eq!(sample_bins(&mut rng, &bins, 20), bins);
     }
 }
