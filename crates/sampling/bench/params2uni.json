@@ -1,0 +1,17 @@
+{
+  "params": [
+    {
+      "name": "param_uniform1",
+      "min": 0,
+      "max": 10,
+      "distribution": "uniform"
+    },
+    {
+      "name": "param_uniform2",
+      "min": 0,
+      "max": 10,
+      "distribution": "uniform"
+    }
+  ],
+  "designs": []
+}
