@@ -1,0 +1,53 @@
+{
+  "params": [
+    {
+      "name": "param_uniform1",
+      "min": 0,
+      "max": 10,
+      "distribution": "uniform"
+    },
+    {
+      "name": "param_uniform2",
+      "min": 0,
+      "max": 10,
+      "distribution": "uniform"
+    },
+    {
+      "name": "param_uniform3",
+      "min": 0,
+      "max": 10,
+      "distribution": "uniform"
+    },
+    {
+      "name": "param_uniform4",
+      "min": 0,
+      "max": 10,
+      "distribution": "uniform"
+    },
+    {
+      "name": "param_uniform5",
+      "min": 0,
+      "max": 10,
+      "distribution": "uniform"
+    },
+    {
+      "name": "param_uniform6",
+      "min": 0,
+      "max": 10,
+      "distribution": "uniform"
+    },
+    {
+      "name": "param_uniform7",
+      "min": 0,
+      "max": 10,
+      "distribution": "uniform"
+    },
+    {
+      "name": "param_uniform8",
+      "min": 0,
+      "max": 10,
+      "distribution": "uniform"
+    }
+  ],
+  "designs": []
+}
