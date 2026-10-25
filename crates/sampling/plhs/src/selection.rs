@@ -89,14 +89,17 @@ pub fn select(
             )));
         }
     }
-    let total = total_assignments(m, candidates);
-    let run = if total <= u128::from(cap) {
+    let exact = !product_exceeds(
+        candidates.iter().map(|c| perm_count(c.bins.len(), m)),
+        u128::from(cap),
+    );
+    let run = if exact {
         enumerate(m, pairs, candidates)
     } else {
         greedy(m, pairs, candidates)
     };
     run.map(|mut sel| {
-        sel.strategy = if total <= u128::from(cap) {
+        sel.strategy = if exact {
             SelectionStrategy::Exact
         } else {
             SelectionStrategy::Greedy
@@ -105,25 +108,32 @@ pub fn select(
     })
 }
 
-/// Number of assignments: the product over parameters of the ordered
-/// selections of `m` distinct bins out of `k_j` empty bins. Saturates at
-/// [`u128::MAX`] instead of overflowing.
-fn total_assignments(m: usize, candidates: &[BinCandidates]) -> u128 {
-    saturating_product(candidates.iter().map(|c| perm_count(c.bins.len(), m)))
-}
-
-/// Saturating product of an iterator of factors: multiplies without
-/// overflowing, stopping at [`u128::MAX`]. `Iterator::product` would panic
-/// on overflow as soon as two factors saturate (e.g. `40! * 40!`).
-fn saturating_product(factors: impl Iterator<Item = u128>) -> u128 {
-    factors.fold(1u128, u128::saturating_mul)
-}
-
-/// Unnormalized cross product of the empty-bin candidate sets: the number
-/// of bin combinations one greedy step searches. Saturating for the same
-/// reason as [`total_assignments`].
-fn cross_product(candidates: &[BinCandidates]) -> u128 {
-    saturating_product(candidates.iter().map(|c| c.bins.len() as u128))
+/// Whether the product of `factors` exceeds `threshold`, deciding exactly
+/// for every threshold the callers use (the cap fits `u64`, the greedy
+/// budget is 10^7; both are far below `sqrt(u128::MAX)`). The running
+/// product is kept `<= threshold`, so a step multiplies two values that
+/// are each `<= threshold` and cannot overflow `u128` spuriously; a failed
+/// [`u128::checked_mul`] therefore proves the true product exceeds
+/// `u128::MAX > threshold`. A single factor above the threshold decides
+/// on its own because the running product is at least 1 (a zero factor
+/// zeroes the whole product and decides immediately). This replaces the
+/// old saturating product, which made cap and guard decisions correct
+/// only by clamping at `u128::MAX`.
+fn product_exceeds(factors: impl Iterator<Item = u128>, threshold: u128) -> bool {
+    let mut product: u128 = 1;
+    for factor in factors {
+        if factor == 0 {
+            return false;
+        }
+        if factor > threshold {
+            return true;
+        }
+        product = match product.checked_mul(factor) {
+            Some(p) if p <= threshold => p,
+            _ => return true,
+        };
+    }
+    false
 }
 
 /// `P(k, m) = k * (k-1) * ... * (k-m+1)`, saturating.
@@ -314,11 +324,23 @@ struct Greedy<'a> {
 }
 
 fn greedy(m: usize, pairs: &[PairSeries], candidates: &[BinCandidates]) -> Result<Selection> {
-    let cross = cross_product(candidates);
-    if cross > GREEDY_CROSS_CAP {
+    if product_exceeds(
+        candidates.iter().map(|c| c.bins.len() as u128),
+        GREEDY_CROSS_CAP,
+    ) {
+        // The true cross product can exceed u128 (50 parameters x 6 empty
+        // bins ~ 8.1e38), so no exact count is printed — only its order of
+        // magnitude, alongside the budget the guard compares against.
+        let magnitude: f64 = candidates
+            .iter()
+            .map(|c| (c.bins.len() as f64).log10())
+            .sum();
         return Err(Error::Invalid(format!(
-            "the greedy fallback would have to search {cross} bin combinations; \
-             reduce the number of empty bins (e.g. narrow the scopes) or new designs"
+            "the greedy fallback would have to search about 10^{} bin combinations per step, \
+             beyond its budget of {GREEDY_CROSS_CAP}; run fewer new designs at a time or \
+             reduce the number of empty bins (a fresh pool starts with every bin empty; \
+             narrowing scopes helps only once designs occupy bins)",
+            magnitude.round() as u64
         )));
     }
     let p = candidates.len();
@@ -497,26 +519,60 @@ mod tests {
     }
 
     #[test]
-    fn total_assignments_saturates_instead_of_panicking() {
-        // regression for `plhs --explore 1000` on a fresh pool: each
-        // parameter's permutation count saturates at u128::MAX and the
-        // non-saturating `Iterator::product` over two saturated factors
-        // overflows and panics. 2 parameters x 40 empty bins already
-        // saturate: 40! > u128::MAX.
-        let forty: Vec<usize> = (0..40).collect();
-        let cands = candidates(&[(forty.clone(), 0.0), (forty, 0.0)]);
-        assert_eq!(perm_count(40, 40), u128::MAX);
-        assert_eq!(total_assignments(40, &cands), u128::MAX);
-        // the unnormalized cross product of the same candidates
-        assert_eq!(cross_product(&cands), 40 * 40);
+    fn product_exceeds_is_exact_at_the_threshold() {
+        // equal to the threshold is not "exceeds"
+        assert!(!product_exceeds([100u128, 10].into_iter(), 1_000));
+        // one over the threshold exceeds
+        assert!(product_exceeds([100u128, 11].into_iter(), 1_000));
+        // an empty product is 1, never exceeding
+        assert!(!product_exceeds(std::iter::empty(), 1_000_000));
+        // a zero factor makes the whole product zero
+        assert!(!product_exceeds([5u128, 0, u128::MAX].into_iter(), 100));
     }
 
     #[test]
-    fn saturating_product_stops_at_u128_max() {
-        assert_eq!(saturating_product(std::iter::empty()), 1);
-        assert_eq!(saturating_product([3u128, 4, 5].into_iter()), 60);
-        // two saturated factors no longer panic
-        assert_eq!(saturating_product([u128::MAX, 2, 3].into_iter()), u128::MAX);
+    fn product_exceeds_needs_no_saturation() {
+        // 6^60 > u128::MAX: the running product exceeds the threshold after
+        // eight factors (6^8 = 1_679_616 > 1_000_000), so the predicate
+        // decides without ever saturating
+        assert!(product_exceeds(std::iter::repeat_n(6u128, 60), 1_000_000));
+        // a saturated factor (u128::MAX) exceeds any reachable threshold on
+        // its own, and the true product is even larger
+        assert!(product_exceeds([u128::MAX, 2, 3].into_iter(), 1_000_000));
+        // 40 empty bins x 40 empty bins: the true cross product is 1600
+        assert!(!product_exceeds([40u128, 40].into_iter(), 1_000_000));
+        // the fresh-pool guard case: 50 parameters x 6 empty bins, the
+        // true product 6^50 ~ 8.1e38 even overflows u128
+        assert!(product_exceeds(std::iter::repeat_n(6u128, 50), 1_000_000));
+    }
+
+    #[test]
+    fn greedy_guard_reports_a_magnitude_not_a_saturated_count() {
+        // 50 parameters x 6 empty bins each (a fresh pool explored with
+        // m = 6): the cross product 6^50 ~ 8.1e38 overflows u128, the old
+        // message printed the saturated count 340282366920938463463374607431768211455
+        // as if it were exact
+        let bins: Vec<usize> = (0..6).collect();
+        let cands = candidates(&(0..50).map(|_| (bins.clone(), 0.0)).collect::<Vec<_>>());
+        let pairs: Vec<PairSeries> = vec![];
+        let err = select(6, &pairs, &cands, 0).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("10^39"),
+            "message should report the magnitude: {msg}"
+        );
+        assert!(
+            msg.contains("10000000"),
+            "message should state the search budget: {msg}"
+        );
+        assert!(
+            !msg.contains("340282366920938463463374607431768211455"),
+            "message must not print the saturated u128 count as if exact: {msg}"
+        );
+        assert!(
+            msg.contains("new designs"),
+            "message should name the fresh-pool remedy (fewer new designs): {msg}"
+        );
     }
 
     #[test]
