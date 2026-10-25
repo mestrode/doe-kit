@@ -19,6 +19,12 @@
 //! centered L2 discrepancy) and pairwise parameter correlations — plus,
 //! when results exist, coverage, per-parameter correlations, scope split
 //! and decile means per result variable.
+//!
+//! Every subcommand that produces a result accepts `--json`: one line of
+//! machine-readable JSON on stdout instead of the human output, so runs
+//! can be collected line by line (benchmarks, result files). Errors stay
+//! human on stderr with the usual exit codes; `--json` only changes the
+//! success output.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -83,12 +89,20 @@ struct PlhsArgs {
     /// to greedy selection.
     #[arg(long, default_value_t = 1_000_000)]
     cap: u64,
+    /// Print one line of machine-readable JSON instead of the human
+    /// summary (for benchmarks and result collection).
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
 struct StatsArgs {
     /// Input JSON file with the pool and evaluated results.
     file: PathBuf,
+    /// Print one line of machine-readable JSON instead of the human
+    /// report (for benchmarks and result collection).
+    #[arg(long)]
+    json: bool,
 }
 
 fn main() -> ExitCode {
@@ -190,6 +204,7 @@ fn run(args: &PlhsArgs) -> Result<String, CliError> {
     let (bytes, mut root) = doe_pool::read(&args.file).map_err(pool)?;
     let params = doe_pool::format::parse_params(&root).map_err(validation)?;
     let designs = doe_pool::format::parse_designs(&root, &params).map_err(validation)?;
+    let started = std::time::Instant::now();
     let aug = if explore {
         plhs::explore(&params, &designs, m, args.seed, args.cap).map_err(validation)?
     } else {
@@ -205,6 +220,26 @@ fn run(args: &PlhsArgs) -> Result<String, CliError> {
     let out_bytes = doe_pool::serialize(&root).map_err(pool)?;
     let out = args.output.clone().unwrap_or_else(|| args.file.clone());
     doe_pool::write_atomic(&out, &out_bytes).map_err(pool)?;
+    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+    if args.json {
+        let report = serde_json::json!({
+            "subcommand": "plhs",
+            "mode": if explore { "explore" } else { "add" },
+            "file": args.file.display().to_string(),
+            "seed": args.seed,
+            "cap": args.cap,
+            "m": m,
+            "designs_before": designs.len(),
+            "designs_after": aug.new_designs.len() + designs.len(),
+            "iteration": aug.iteration,
+            "n_params": params.len(),
+            "strategy": aug.strategy.name(),
+            "score": aug.score,
+            "elapsed_ms": elapsed_ms,
+        });
+        return Ok(report.to_string());
+    }
 
     Ok(format!(
         "{verb} {} designs (iteration {}), score {:.6}",
@@ -230,6 +265,18 @@ fn run_stats(args: &StatsArgs) -> Result<String, CliError> {
         doe_stats::analyze(&params, &designs, &results).map_err(validation)?
     };
     let pool = doe_stats::analyze_pool(&params, &designs).map_err(validation)?;
+    if args.json {
+        let report = serde_json::json!({
+            "subcommand": "stats",
+            "file": args.file.display().to_string(),
+            "evaluated": results.len(),
+            "pool": serde_json::to_value(&pool)
+                .map_err(|e| validation(plhs::Error::Invalid(e.to_string())))?,
+            "results": serde_json::to_value(&stats)
+                .map_err(|e| validation(plhs::Error::Invalid(e.to_string())))?,
+        });
+        return Ok(report.to_string());
+    }
     Ok(format_stats_report(&pool, &stats, results.len()))
 }
 

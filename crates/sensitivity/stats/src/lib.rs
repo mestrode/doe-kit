@@ -37,7 +37,7 @@ use plhs::scoring::pearson;
 pub use doe_types::Results;
 
 /// Descriptive statistics of one result variable.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct VariableStats {
     /// Variable name (the result field, e.g. `energy`).
     pub name: String,
@@ -56,7 +56,7 @@ pub struct VariableStats {
 }
 
 /// Per-parameter statistics for one result variable.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ParameterStats {
     /// Parameter name.
     pub name: String,
@@ -76,7 +76,7 @@ pub struct ParameterStats {
 }
 
 /// Count, mean and sample std of a result over a set of designs.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct MeanStd {
     /// Number of designs in the set.
     pub count: usize,
@@ -85,7 +85,7 @@ pub struct MeanStd {
 }
 
 /// One decile bin of the definition range.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Decile {
     /// Evaluated designs in this decile.
     pub count: usize,
@@ -98,7 +98,7 @@ pub const DECILES: usize = 10;
 
 /// Sampling-point statistics of the pool itself, independent of any
 /// evaluated results.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PoolStats {
     /// Total designs in the pool.
     pub total: usize,
@@ -122,7 +122,7 @@ pub struct PoolStats {
 }
 
 /// Descriptive statistics of one parameter's sampling points.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ParameterPoolStats {
     /// Parameter name.
     pub name: String,
@@ -144,7 +144,7 @@ pub struct ParameterPoolStats {
 }
 
 /// Correlation between the sampling points of two parameters.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PairCorrelation {
     /// First parameter of the pair.
     pub a: String,

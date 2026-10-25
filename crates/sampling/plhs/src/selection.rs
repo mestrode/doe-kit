@@ -38,6 +38,25 @@ pub struct BinCandidates {
     pub values: Vec<f64>,
 }
 
+/// The strategy a [`select`] run used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionStrategy {
+    /// Exact enumeration of every assignment (at or below the cap).
+    Exact,
+    /// Greedy sequential selection (above the cap).
+    Greedy,
+}
+
+impl SelectionStrategy {
+    /// Stable lowercase name for reports: `"exact"` / `"greedy"`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::Greedy => "greedy",
+        }
+    }
+}
+
 /// The chosen assignment.
 #[derive(Debug, Clone)]
 pub struct Selection {
@@ -46,6 +65,8 @@ pub struct Selection {
     pub picks: Vec<Vec<usize>>,
     /// Score of the chosen assignment.
     pub score: f64,
+    /// The strategy that produced this selection.
+    pub strategy: SelectionStrategy,
 }
 
 /// Selects the best assignment of `m` new designs to the empty bins.
@@ -69,11 +90,19 @@ pub fn select(
         }
     }
     let total = total_assignments(m, candidates);
-    if total <= u128::from(cap) {
+    let run = if total <= u128::from(cap) {
         enumerate(m, pairs, candidates)
     } else {
         greedy(m, pairs, candidates)
-    }
+    };
+    run.map(|mut sel| {
+        sel.strategy = if total <= u128::from(cap) {
+            SelectionStrategy::Exact
+        } else {
+            SelectionStrategy::Greedy
+        };
+        sel
+    })
 }
 
 /// Number of assignments: the product over parameters of the ordered
@@ -179,6 +208,7 @@ impl Enumerator<'_> {
             self.best = Some(Selection {
                 picks: self.picks.clone(),
                 score,
+                strategy: SelectionStrategy::Exact,
             });
         }
     }
@@ -325,6 +355,7 @@ fn greedy(m: usize, pairs: &[PairSeries], candidates: &[BinCandidates]) -> Resul
     Ok(Selection {
         picks: state.picks.clone(),
         score,
+        strategy: SelectionStrategy::Greedy,
     })
 }
 
@@ -393,6 +424,21 @@ mod tests {
 
     fn pair_series(a: usize, b: usize, xs: Vec<f64>, ys: Vec<f64>) -> PairSeries {
         PairSeries { a, b, xs, ys }
+    }
+
+    #[test]
+    fn select_reports_the_strategy_it_used() {
+        // 2 params, 3 empty bins each, m = 2: P(3, 2)^2 = 36 <= cap
+        let cands = candidates(&[(vec![1, 4, 7], 0.0), (vec![2, 5, 8], 0.0)]);
+        let pairs = vec![pair_series(0, 1, vec![0.1, 0.4, 0.9], vec![0.9, 0.6, 0.1])];
+        let sel = select(2, &pairs, &cands, 1_000_000).unwrap();
+        assert_eq!(sel.strategy, SelectionStrategy::Exact);
+        assert_eq!(sel.strategy.name(), "exact");
+
+        // the same setup with cap 0 always exceeds the cap: greedy runs
+        let sel = select(2, &pairs, &cands, 0).unwrap();
+        assert_eq!(sel.strategy, SelectionStrategy::Greedy);
+        assert_eq!(sel.strategy.name(), "greedy");
     }
 
     #[test]

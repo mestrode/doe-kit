@@ -259,6 +259,82 @@ fn subcommand_is_required_and_validated() {
 }
 
 #[test]
+fn plhs_json_emits_one_machine_readable_line() {
+    let dir = temp_dir("plhs-json");
+    let file = dir.join("designs.json");
+    fs::write(&file, fixture()).unwrap();
+
+    let (out, stdout) = run(&dir, &["plhs", "--add", "2", "--json", "designs.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // one line of JSON only: the human summary is suppressed
+    assert_eq!(stdout.lines().count(), 1, "stdout: {stdout}");
+    let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
+    assert_eq!(v["subcommand"], "plhs");
+    assert_eq!(v["mode"], "add");
+    assert_eq!(v["file"], "designs.json");
+    assert_eq!(v["seed"], 42);
+    assert_eq!(v["cap"], 1_000_000);
+    assert_eq!(v["m"], 2);
+    assert_eq!(v["designs_before"], 30);
+    assert_eq!(v["designs_after"], 32);
+    assert_eq!(v["iteration"], 1);
+    assert_eq!(v["n_params"], 2);
+    // only a handful of assignments are possible on the fixture: the
+    // exact enumeration ran
+    assert_eq!(v["strategy"], "exact");
+    assert!(v["score"].as_f64().unwrap() >= 0.0);
+    assert!(v["elapsed_ms"].as_u64().is_some(), "elapsed_ms in {stdout}");
+    // the pool is written and backed up exactly as without --json
+    let root: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(root["new_designs"].as_array().unwrap().len(), 2);
+    assert!(dir.join("designs.json.bak").exists());
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn plhs_json_reports_greedy_with_cap_zero() {
+    let dir = temp_dir("plhs-json-greedy");
+    let file = dir.join("designs.json");
+    fs::write(&file, fixture()).unwrap();
+
+    let (out, stdout) = run(
+        &dir,
+        &["plhs", "--add", "2", "--cap", "0", "--json", "designs.json"],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
+    assert_eq!(v["cap"], 0);
+    assert_eq!(v["strategy"], "greedy");
+    assert!(v["score"].as_f64().unwrap() >= 0.0);
+    assert!(v["elapsed_ms"].as_u64().is_some(), "elapsed_ms in {stdout}");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn plhs_json_keeps_validation_errors_human() {
+    let dir = temp_dir("plhs-json-invalid");
+    let file = dir.join("bad.json");
+    fs::write(&file, "{ not json").unwrap();
+
+    // errors stay human on stderr and print no JSON: --json only
+    // changes the success output
+    let (out, stdout) = run(&dir, &["plhs", "--add", "2", "--json", "bad.json"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stdout.is_empty(), "stdout on error: {stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("error"), "stderr: {stderr}");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn stats_reports_variables_and_coverage() {
     let dir = temp_dir("stats");
     let file = dir.join("designs.json");
@@ -529,5 +605,77 @@ fn stats_ignores_non_numeric_result_fields() {
     );
     assert!(!stdout.contains("comment"), "stdout: {stdout}");
     assert!(stdout.contains("energy"), "stdout: {stdout}");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn stats_json_reports_the_full_pool_analysis() {
+    let dir = temp_dir("stats-json");
+    let file = dir.join("designs.json");
+    fs::write(&file, fixture()).unwrap();
+
+    let (out, stdout) = run(&dir, &["stats", "--json", "designs.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // one line of JSON only: the human report is suppressed
+    assert_eq!(stdout.lines().count(), 1, "stdout: {stdout}");
+    let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
+    assert_eq!(v["subcommand"], "stats");
+    assert_eq!(v["file"], "designs.json");
+    assert_eq!(v["evaluated"], 3);
+    let pool = &v["pool"];
+    assert_eq!(pool["total"], 30);
+    let params = pool["parameters"].as_array().unwrap();
+    assert_eq!(params.len(), 2);
+    assert_eq!(params[0]["name"], "x");
+    assert_eq!(params[0]["n"], 30);
+    assert_eq!(params[0]["deciles"].as_array().unwrap().len(), 10);
+    assert!(params[0]["outer_deciles"].as_u64().is_some());
+    assert!(pool["min_pairwise_distance"].is_number());
+    assert!(pool["mean_nearest_neighbor"].is_number());
+    assert!(pool["discrepancy_cl2"].is_number());
+    let pairs = pool["pairs"].as_array().unwrap();
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(pairs[0]["a"], "x");
+    assert_eq!(pairs[0]["b"], "y");
+    assert!(pairs[0]["pearson"].is_number());
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["name"], "energy");
+    assert_eq!(results[0]["n"], 3);
+    assert_eq!(results[0]["total"], 30);
+    assert_eq!(results[0]["parameters"].as_array().unwrap().len(), 2);
+
+    // read-only: the input file is untouched
+    assert_eq!(fs::read_to_string(&file).unwrap(), fixture());
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn stats_json_without_results_has_empty_results_array() {
+    let dir = temp_dir("stats-json-empty");
+    let file = dir.join("designs.json");
+    let mut root: Value = serde_json::from_str(&fixture()).unwrap();
+    root["results"] = Value::Array(vec![]);
+    fs::write(&file, serde_json::to_string(&root).unwrap()).unwrap();
+
+    let (out, stdout) = run(&dir, &["stats", "--json", "designs.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
+    assert_eq!(v["subcommand"], "stats");
+    assert_eq!(v["evaluated"], 0);
+    assert_eq!(
+        v["results"].as_array().unwrap().len(),
+        0,
+        "stdout: {stdout}"
+    );
+    assert_eq!(v["pool"]["total"], 30);
     fs::remove_dir_all(&dir).ok();
 }

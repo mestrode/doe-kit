@@ -10,12 +10,10 @@ readme = "README.md"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
 plhs = { path = "../plhs" }
 doe-stats = { path = "../../sensitivity/stats" }
 doe-pool = { path = "../../doe-pool" }
-
-[dev-dependencies]
-serde_json = { version = "1", features = ["preserve_order"] }
 
 [[bin]]
 name = "sampling"

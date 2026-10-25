@@ -49,6 +49,7 @@ Options:
 | `--output FILE` | output file, default: the input file |
 | `--no-backup` | skip writing the backup file |
 | `--cap N` | exact-enumeration cap, default 1000000; above it, greedy sequential selection is used |
+| `--json` | print one line of machine-readable JSON instead of the human summary (benchmark and result collection) |
 
 The input file is read, `N` new designs are appended to `designs`,
 `new_designs` is overwritten with the new batch, and the result is written
@@ -63,6 +64,28 @@ interesting sections.
 
 Exit codes: `0` success, `1` validation error, `2` I/O error (missing
 subcommand or unknown subcommand: usage error).
+
+## Machine-readable output: `--json`
+
+Both `plhs` and `stats` accept `--json`: instead of the human summary or
+report, they print exactly one line of JSON on stdout and suppress all
+human output. Errors stay human on stderr with the usual exit codes; the
+pool is written and backed up exactly as without the flag.
+
+```sh
+sampling plhs --add 2 --json designs.json >> results.jsonl
+sampling stats --json designs.json >> results.jsonl
+```
+
+The `plhs` object carries `subcommand`, `mode` (`add`/`explore`), `file`,
+`seed`, `cap`, `m`, `designs_before`, `designs_after`, `iteration`,
+`n_params`, `strategy` (`exact`/`greedy`, the selection strategy the run
+actually used), `score` and `elapsed_ms` (the compute phase only: after
+reading the pool, before writing it). The `stats` object carries
+`subcommand`, `file`, `evaluated`, `pool` and `results`, mirroring the
+human report's numbers. This flag is the output convention for every
+future sampling-method subcommand, so benchmark runs can be collected
+line by line into one file.
 
 ## Judging the pool and results before expensive simulations: `sampling stats`
 

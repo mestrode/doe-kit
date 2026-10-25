@@ -55,11 +55,14 @@ cadence; publication to crates.io is manual and per crate.
   never introduce nondeterminism or unseeded randomness.
 - The `sampling plhs` CLI contract: `sampling plhs --add N file` /
   `sampling plhs --explore N file` with options `--seed`, `--output`,
-  `--no-backup`, `--cap`. Exit codes: 0 success, 1 validation error,
-  2 I/O error. Keep these stable.
+  `--no-backup`, `--cap`, `--json`. Exit codes: 0 success, 1 validation
+  error, 2 I/O error. Keep these stable.
 - Exactly one of `--add` / `--explore` must be provided.
 - `sampling stats` reports statistics only: it writes no files and makes
   no recommendations; the judgment stays with the user.
+- `--json` on a subcommand means one machine-readable line on stdout,
+  human output suppressed, errors still human on stderr. Every
+  sampling-method subcommand gets this flag.
 - Input files are backed up to `<file>.bak` unless `--no-backup` is given.
 - Pool files are read, parsed and written through the `doe-pool` crate; do
   not reimplement pool file handling in another crate or binary.
