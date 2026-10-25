@@ -10,6 +10,7 @@ repository = "https://github.com/mestrode/doe-kit"
 [dependencies]
 plhs = { path = "../../sampling/plhs" }
 doe-types = { path = "../../doe-types" }
+serde = { version = "1", features = ["derive"] }
 
 [lib]
 name = "doe_stats"

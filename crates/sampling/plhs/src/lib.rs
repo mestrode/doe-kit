@@ -93,6 +93,7 @@ use rand_chacha::ChaCha8Rng;
 
 use binning::{bin_count, candidate_t, empty_bins, occupied_bins};
 use scoring::PairSeries;
+pub use selection::SelectionStrategy;
 use selection::{BinCandidates, select};
 
 /// The result of [`augment`].
@@ -104,6 +105,8 @@ pub struct Augmentation {
     pub score: f64,
     /// Iteration number detected from the existing design names.
     pub iteration: u64,
+    /// The selection strategy that chose the assignment.
+    pub strategy: SelectionStrategy,
 }
 
 /// Samples `m` new designs for the given parameters, extending the Latin
@@ -270,6 +273,7 @@ pub fn augment(
         new_designs,
         score: selection.score,
         iteration,
+        strategy: selection.strategy,
     })
 }
 
@@ -337,6 +341,32 @@ mod tests {
         assert_eq!(next_iteration(["d_1", "2.2"]), 3);
         // malformed variants do not count
         assert_eq!(next_iteration(["a.b", "1.2.3", "1.x", ".5"]), 1);
+    }
+
+    #[test]
+    fn augmentation_reports_the_selection_strategy() {
+        let params = vec![
+            Parameter::uniform("x", 0.0, 10.0)
+                .unwrap()
+                .with_scope(2.0, 8.0)
+                .unwrap(),
+            Parameter::uniform("y", 0.0, 10.0)
+                .unwrap()
+                .with_scope(3.0, 7.0)
+                .unwrap(),
+        ];
+        let designs: Vec<Design> = (0..8)
+            .map(|i| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![2.2 + i as f64 * 0.5, 3.1 + (i % 5) as f64 * 0.8],
+            })
+            .collect();
+        // few assignments on a small pool: exact enumeration runs
+        let a = augment(&params, &designs, 2, 7, 1_000_000).unwrap();
+        assert_eq!(a.strategy, SelectionStrategy::Exact);
+        // cap 0 forces greedy
+        let b = augment(&params, &designs, 2, 7, 0).unwrap();
+        assert_eq!(b.strategy, SelectionStrategy::Greedy);
     }
 
     #[test]
