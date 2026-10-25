@@ -532,6 +532,40 @@ mod tests {
     }
 
     #[test]
+    fn explore_with_many_designs_on_a_fresh_pool_works() {
+        // regression for `sampling plhs --explore 1000` on a fresh pool:
+        // the assignment count saturated u128 and the non-saturating
+        // product panicked. Beyond the panic, the greedy fallback scored
+        // every leaf in O(n); the incremental scorer keeps it O(1).
+        let params = vec![
+            Parameter::uniform("x", 0.0, 10.0).unwrap(),
+            Parameter::uniform("y", 0.0, 10.0).unwrap(),
+        ];
+        let m = 200;
+        let aug = explore(&params, &[], m, 42, 1_000_000).unwrap();
+        assert_eq!(aug.new_designs.len(), m);
+        assert_eq!(aug.iteration, 1);
+        assert!(aug.score.is_finite() && aug.score >= 0.0);
+        for (i, design) in aug.new_designs.iter().enumerate() {
+            assert_eq!(design.name, format!("1.{}", i + 1));
+            assert!((0.0..=10.0).contains(&design.values[0]));
+            assert!((0.0..=10.0).contains(&design.values[1]));
+        }
+        // Latin Hypercube: each new design occupies its own bin in every
+        // parameter (m equal-width bins, empty pool)
+        for j in 0..2 {
+            let mut bins: Vec<usize> = aug
+                .new_designs
+                .iter()
+                .map(|d| (d.values[j] / 10.0 * m as f64) as usize)
+                .collect();
+            bins.sort_unstable();
+            bins.dedup();
+            assert_eq!(bins.len(), m, "parameter {j}: designs share bins");
+        }
+    }
+
+    #[test]
     fn augment_on_an_empty_pool_creates_all_new_designs() {
         // same code path via the scoped refinement: an empty pool has no
         // pair series yet, the new designs alone carry the Latin Hypercube

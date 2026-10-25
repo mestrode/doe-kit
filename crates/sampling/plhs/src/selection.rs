@@ -19,6 +19,14 @@ use crate::scoring::{PairSeries, assignment_score, assignment_score_with};
 /// Upper bound on the empty-bin cross product searched per greedy step.
 const GREEDY_CROSS_CAP: u128 = 10_000_000;
 
+/// Up to this many placed designs, the greedy fallback scores every leaf
+/// with the reference two-pass scorer ([`assignment_score_with`]); beyond
+/// it, the incremental O(1) scorer ([`PairSums`]) takes over. The limit
+/// keeps the historical floating-point behaviour — which the golden
+/// fixtures pin — bit-identical for small pools while making large
+/// `--explore` runs tractable.
+const REFERENCE_SCORING_PLACED_LIMIT: usize = 10;
+
 /// Candidate values of the empty bins of one parameter.
 #[derive(Debug, Clone)]
 pub struct BinCandidates {
@@ -69,12 +77,24 @@ pub fn select(
 }
 
 /// Number of assignments: the product over parameters of the ordered
-/// selections of `m` distinct bins out of `k_j` empty bins.
+/// selections of `m` distinct bins out of `k_j` empty bins. Saturates at
+/// [`u128::MAX`] instead of overflowing.
 fn total_assignments(m: usize, candidates: &[BinCandidates]) -> u128 {
-    candidates
-        .iter()
-        .map(|c| perm_count(c.bins.len(), m))
-        .product()
+    saturating_product(candidates.iter().map(|c| perm_count(c.bins.len(), m)))
+}
+
+/// Saturating product of an iterator of factors: multiplies without
+/// overflowing, stopping at [`u128::MAX`]. `Iterator::product` would panic
+/// on overflow as soon as two factors saturate (e.g. `40! * 40!`).
+fn saturating_product(factors: impl Iterator<Item = u128>) -> u128 {
+    factors.fold(1u128, u128::saturating_mul)
+}
+
+/// Unnormalized cross product of the empty-bin candidate sets: the number
+/// of bin combinations one greedy step searches. Saturating for the same
+/// reason as [`total_assignments`].
+fn cross_product(candidates: &[BinCandidates]) -> u128 {
+    saturating_product(candidates.iter().map(|c| c.bins.len() as u128))
 }
 
 /// `P(k, m) = k * (k-1) * ... * (k-m+1)`, saturating.
@@ -166,9 +186,91 @@ impl Enumerator<'_> {
 
 // --- greedy fallback ---------------------------------------------------------
 
+/// Running raw sums of one pair's series — the in-scope base values plus
+/// the designs placed so far — updated incrementally in placement order so
+/// that scoring one more design costs O(1) instead of O(n).
+struct PairSums {
+    /// Number of samples accumulated so far.
+    len: usize,
+    sx: f64,
+    sy: f64,
+    sxx: f64,
+    syy: f64,
+    sxy: f64,
+}
+
+impl PairSums {
+    /// Sums of a base series (the pair's shared in-scope designs).
+    fn new(xs: &[f64], ys: &[f64]) -> Self {
+        let mut sums = PairSums {
+            len: 0,
+            sx: 0.0,
+            sy: 0.0,
+            sxx: 0.0,
+            syy: 0.0,
+            sxy: 0.0,
+        };
+        for (&x, &y) in xs.iter().zip(ys.iter()) {
+            sums.push(x, y);
+        }
+        sums
+    }
+
+    /// Folds one more sample into the running sums.
+    fn push(&mut self, x: f64, y: f64) {
+        self.len += 1;
+        self.sx += x;
+        self.sy += y;
+        self.sxx += x * x;
+        self.syy += y * y;
+        self.sxy += x * y;
+    }
+
+    /// Squared Pearson correlation of the accumulated series plus one
+    /// more sample `(x, y)`, in O(1) from the running raw sums.
+    ///
+    /// Mirrors the conventions of [`crate::scoring::pearson`]: `0.0` for
+    /// fewer than two samples and for zero variance on either side; the
+    /// coefficient is clamped before squaring.
+    fn r2_with(&self, x: f64, y: f64) -> f64 {
+        let n = self.len + 1;
+        if n < 2 {
+            return 0.0;
+        }
+        let (sx, sy) = (self.sx + x, self.sy + y);
+        let nf = n as f64;
+        let cxx = self.sxx + x * x - sx * sx / nf;
+        let cyy = self.syy + y * y - sy * sy / nf;
+        let cxy = self.sxy + x * y - sx * sy / nf;
+        if cxx <= 0.0 || cyy <= 0.0 {
+            return 0.0;
+        }
+        let r = (cxy / (cxx * cyy).sqrt()).clamp(-1.0, 1.0);
+        r * r
+    }
+}
+
+/// Greedy score of placing design `design` on top of the accumulated
+/// `sums`: the sum of squared pair correlations over all pairs, each in
+/// O(1). `cand[j][design]` holds the candidate value under trial.
+fn incremental_score(
+    pairs: &[PairSeries],
+    sums: &[PairSums],
+    cand: &[Vec<f64>],
+    design: usize,
+) -> f64 {
+    let mut score = 0.0;
+    for (pair, sums) in pairs.iter().zip(sums.iter()) {
+        score += sums.r2_with(cand[pair.a][design], cand[pair.b][design]);
+    }
+    score
+}
+
 struct Greedy<'a> {
     pairs: &'a [PairSeries],
     candidates: &'a [BinCandidates],
+    /// Running sums per pair, aligned with `pairs`.
+    sums: Vec<PairSums>,
     used: Vec<Vec<bool>>,
     picks: Vec<Vec<usize>>,
     cand: Vec<Vec<f64>>,
@@ -182,7 +284,7 @@ struct Greedy<'a> {
 }
 
 fn greedy(m: usize, pairs: &[PairSeries], candidates: &[BinCandidates]) -> Result<Selection> {
-    let cross: u128 = candidates.iter().map(|c| c.bins.len() as u128).product();
+    let cross = cross_product(candidates);
     if cross > GREEDY_CROSS_CAP {
         return Err(Error::Invalid(format!(
             "the greedy fallback would have to search {cross} bin combinations; \
@@ -193,6 +295,10 @@ fn greedy(m: usize, pairs: &[PairSeries], candidates: &[BinCandidates]) -> Resul
     let mut state = Greedy {
         pairs,
         candidates,
+        sums: pairs
+            .iter()
+            .map(|pair| PairSums::new(&pair.xs, &pair.ys))
+            .collect(),
         used: candidates
             .iter()
             .map(|c| vec![false; c.bins.len()])
@@ -213,11 +319,7 @@ fn greedy(m: usize, pairs: &[PairSeries], candidates: &[BinCandidates]) -> Resul
             .best
             .take()
             .ok_or_else(|| Error::Invariant("empty search space".to_owned()))?;
-        for (j, &c) in chosen.iter().enumerate() {
-            state.used[j][c] = true;
-            state.picks[j][i] = c;
-            state.cand[j][i] = state.candidates[j].t[c];
-        }
+        state.commit(&chosen, i);
     }
     let score = assignment_score(state.pairs, &state.cand, m);
     Ok(Selection {
@@ -232,13 +334,12 @@ impl Greedy<'_> {
             for jj in 0..j {
                 self.cand[jj][self.design] = self.candidates[jj].t[self.tuple[jj]];
             }
-            let score = assignment_score_with(
-                self.pairs,
-                &self.cand,
-                self.design + 1,
-                &mut self.xs,
-                &mut self.ys,
-            );
+            let placed = self.design + 1;
+            let score = if placed <= REFERENCE_SCORING_PLACED_LIMIT {
+                assignment_score_with(self.pairs, &self.cand, placed, &mut self.xs, &mut self.ys)
+            } else {
+                incremental_score(self.pairs, &self.sums, &self.cand, self.design)
+            };
             let better = self.best.as_ref().is_none_or(|(_, s)| score < *s);
             if better {
                 self.best = Some((self.tuple.clone(), score));
@@ -251,6 +352,20 @@ impl Greedy<'_> {
             }
             self.tuple[j] = idx;
             self.rec(j + 1);
+        }
+    }
+
+    /// Fixes the chosen bin combination for design `i` and folds the
+    /// placed values into the running pair sums.
+    fn commit(&mut self, chosen: &[usize], design: usize) {
+        for (j, &c) in chosen.iter().enumerate() {
+            self.used[j][c] = true;
+            self.picks[j][design] = c;
+            self.cand[j][design] = self.candidates[j].t[c];
+        }
+        for (pair, sums) in self.pairs.iter().zip(self.sums.iter_mut()) {
+            let (x, y) = (self.cand[pair.a][design], self.cand[pair.b][design]);
+            sums.push(x, y);
         }
     }
 }
@@ -333,5 +448,80 @@ mod tests {
         assert_eq!(perm_count(5, 2), 20);
         assert_eq!(perm_count(3, 3), 6);
         assert_eq!(perm_count(2, 5), 0);
+    }
+
+    #[test]
+    fn total_assignments_saturates_instead_of_panicking() {
+        // regression for `plhs --explore 1000` on a fresh pool: each
+        // parameter's permutation count saturates at u128::MAX and the
+        // non-saturating `Iterator::product` over two saturated factors
+        // overflows and panics. 2 parameters x 40 empty bins already
+        // saturate: 40! > u128::MAX.
+        let forty: Vec<usize> = (0..40).collect();
+        let cands = candidates(&[(forty.clone(), 0.0), (forty, 0.0)]);
+        assert_eq!(perm_count(40, 40), u128::MAX);
+        assert_eq!(total_assignments(40, &cands), u128::MAX);
+        // the unnormalized cross product of the same candidates
+        assert_eq!(cross_product(&cands), 40 * 40);
+    }
+
+    #[test]
+    fn saturating_product_stops_at_u128_max() {
+        assert_eq!(saturating_product(std::iter::empty()), 1);
+        assert_eq!(saturating_product([3u128, 4, 5].into_iter()), 60);
+        // two saturated factors no longer panic
+        assert_eq!(saturating_product([u128::MAX, 2, 3].into_iter()), u128::MAX);
+    }
+
+    #[test]
+    fn incremental_score_matches_the_reference_scorer() {
+        // a pair with a non-empty base series plus 30 placed designs: the
+        // O(1) incremental scorer must track the two-pass reference
+        // scorer to within float rounding
+        let xs = vec![0.1, 0.4, 0.55, 0.9];
+        let ys = vec![0.9, 0.6, 0.45, 0.1];
+        let pairs = vec![pair_series(0, 1, xs, ys)];
+        let cand: Vec<Vec<f64>> = (0..2)
+            .map(|j| {
+                (0..30)
+                    .map(|i| (((i * 7 + j * 11) % 30) as f64 + 0.5) / 31.0)
+                    .collect()
+            })
+            .collect();
+        let mut sums = vec![PairSums::new(&pairs[0].xs, &pairs[0].ys)];
+        let mut rx = Vec::new();
+        let mut ry = Vec::new();
+        for i in 0..30 {
+            let incremental = incremental_score(&pairs, &sums, &cand, i);
+            let reference = assignment_score_with(&pairs, &cand, i + 1, &mut rx, &mut ry);
+            assert!(
+                (incremental - reference).abs() < 1e-9,
+                "design {i}: incremental={incremental} reference={reference}"
+            );
+            sums[0].push(cand[0][i], cand[1][i]);
+        }
+    }
+
+    #[test]
+    fn greedy_scores_beyond_the_reference_limit_incrementally() {
+        // 15 designs on a fresh pool (15 empty bins per parameter):
+        // P(15, 15)^2 saturates far above the cap, so greedy runs; placed
+        // counts 11..=15 take the incremental path
+        let fifteen: Vec<usize> = (0..15).collect();
+        let cands = candidates(&[(fifteen.clone(), 0.0), (fifteen, 0.01)]);
+        let pairs = vec![pair_series(
+            0,
+            1,
+            vec![0.1, 0.4, 0.55, 0.9],
+            vec![0.9, 0.6, 0.45, 0.1],
+        )];
+        let sel = select(15, &pairs, &cands, 0).unwrap();
+        for j in 0..2 {
+            let mut bins: Vec<usize> = sel.picks[j].clone();
+            bins.sort_unstable();
+            bins.dedup();
+            assert_eq!(bins.len(), 15, "parameter {j}: designs share bins");
+        }
+        assert!(sel.score.is_finite() && sel.score >= 0.0);
     }
 }
