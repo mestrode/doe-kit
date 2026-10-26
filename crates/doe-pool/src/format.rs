@@ -298,3 +298,122 @@ pub fn parse_results(root: &Value) -> Result<Vec<Results>> {
     }
     Ok(out)
 }
+
+/// Appends evaluated `results` entries to the pool's `results` array.
+///
+/// Every entry must name a design that exists in the pool and must not
+/// collide with an existing results entry (one entry per design; which
+/// designs count as solved is the caller's bookkeeping). The `results`
+/// array is created when the pool has none yet. All other fields are
+/// left untouched.
+pub fn append_results(root: &mut Value, params: &[Parameter], results: &[Results]) -> Result<()> {
+    let designs = parse_designs(root, params)?;
+    let existing = parse_results(root)?;
+    let design_names: BTreeSet<&str> = designs.iter().map(|d| d.name.as_str()).collect();
+    let existing_names: BTreeSet<&str> = existing.iter().map(|r| r.name.as_str()).collect();
+    for r in results {
+        if !design_names.contains(r.name.as_str()) {
+            return Err(Error::Design {
+                name: r.name.clone(),
+                reason: "results entry does not match any design".to_owned(),
+            });
+        }
+        if existing_names.contains(r.name.as_str()) {
+            return Err(Error::Design {
+                name: r.name.clone(),
+                reason: "a results entry for this design already exists".to_owned(),
+            });
+        }
+    }
+    let root_obj = root
+        .as_object_mut()
+        .ok_or_else(|| invalid("root must be a JSON object"))?;
+    if !root_obj.contains_key("results") {
+        root_obj.insert("results".to_owned(), Value::Array(Vec::new()));
+    }
+    let arr = root_obj
+        .get_mut("results")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| invalid("'root.results' must be an array"))?;
+    for result in results {
+        let mut obj = Map::new();
+        obj.insert("name".to_owned(), Value::String(result.name.clone()));
+        for (key, value) in &result.values {
+            let n = Number::from_f64(*value).ok_or_else(|| Error::Design {
+                name: result.name.clone(),
+                reason: format!("non-finite value for result variable '{key}'"),
+            })?;
+            obj.insert(key.clone(), Value::Number(n));
+        }
+        arr.push(Value::Object(obj));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal pool: one uniform parameter `a` and designs `1.1`, `1.2`.
+    fn pool() -> Value {
+        serde_json::json!({
+            "params": [{ "name": "a", "min": 0, "max": 10 }],
+            "designs": [
+                { "name": "1.1", "a": 2.0 },
+                { "name": "1.2", "a": 3.0 }
+            ],
+            "note": "unknown fields must survive"
+        })
+    }
+
+    fn one_result(name: &str, value: f64) -> Results {
+        Results {
+            name: name.to_owned(),
+            values: BTreeMap::from([("linear".to_owned(), value)]),
+        }
+    }
+
+    #[test]
+    fn append_results_creates_the_array_and_keeps_unknown_fields() {
+        let mut root = pool();
+        let params = parse_params(&root).unwrap();
+        append_results(&mut root, &params, &[one_result("1.1", 4.2)]).unwrap();
+        let entry = &root["results"][0];
+        assert_eq!(entry["name"], "1.1");
+        assert_eq!(entry["linear"], 4.2);
+        assert_eq!(root["note"], "unknown fields must survive");
+        assert_eq!(root["designs"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn append_results_appends_after_existing_entries() {
+        let mut root = pool();
+        root["results"] = serde_json::json!([{ "name": "1.1", "linear": 1.0 }]);
+        let params = parse_params(&root).unwrap();
+        append_results(&mut root, &params, &[one_result("1.2", 2.0)]).unwrap();
+        assert_eq!(root["results"].as_array().unwrap().len(), 2);
+        assert_eq!(root["results"][1]["name"], "1.2");
+        assert_eq!(root["results"][0]["linear"], 1.0);
+    }
+
+    #[test]
+    fn append_results_refuses_a_name_matching_no_design() {
+        let mut root = pool();
+        let params = parse_params(&root).unwrap();
+        let err = append_results(&mut root, &params, &[one_result("9.9", 1.0)]).unwrap_err();
+        assert!(err.to_string().contains("9.9"), "{err}");
+        assert!(
+            err.to_string().contains("does not match any design"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn append_results_refuses_a_duplicate_entry() {
+        let mut root = pool();
+        root["results"] = serde_json::json!([{ "name": "1.1", "linear": 1.0 }]);
+        let params = parse_params(&root).unwrap();
+        let err = append_results(&mut root, &params, &[one_result("1.1", 2.0)]).unwrap_err();
+        assert!(err.to_string().contains("already exists"), "{err}");
+    }
+}
