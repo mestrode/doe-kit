@@ -70,6 +70,29 @@ behaviour, draw for draw. Batched runs report the pooled score over all
 pairs and all new designs, and the aggregate strategy: `exact` or `greedy`
 when every chunk agrees, `mixed` otherwise.
 
+### Polish
+
+Chunks (and greedy steps) are optimized one at a time, so the finished
+assignment is improvable even when every chunk ran exact: greedy chunks
+drift, and batched exact chunks are per-chunk optimal, never jointly.
+`augment()` therefore runs a deterministic post-placement refinement
+pass after the chunk loop, before any values materialize: a greedy swap
+descent whose move exchanges the values of two new designs within one
+parameter. The per-parameter value multisets — and with them the Latin
+Hypercube property — are structurally preserved by every move. A swap in
+parameter `j` changes only the pairs involving `j`, each scored in O(1)
+from running raw sums. Sweeps scan all candidate swaps in lexicographic
+order and apply strictly improving ones immediately; the pass stops at
+the first sweep without an improvement (convergence) or when a bounded
+evaluation budget is exhausted (up to 32 sweeps, at least one, no
+randomness anywhere). A single-chunk exact run skips the pass: the exact
+enumeration already searched the whole assignment space, of which the
+descent's swap space is a subset, so it is a provable no-op there. The
+pass is the quality stage for the deficit paths of the chunked selection:
+a single greedy chunk that drifted at 2 parameters and 1000 designs
+polishes from a pooled score of 0.386 to ~1e-13 in milliseconds, and the
+forced one-design-per-chunk loop at 50 parameters gains ~20% score.
+
 `explore()` runs the same machinery with every parameter treated as
 uniform over its full definition range `[min, max]`: scopes and non-uniform
 distributions are ignored for placement, the bins span the whole range, and

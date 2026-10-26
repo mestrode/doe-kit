@@ -89,6 +89,10 @@ struct PlhsArgs {
     /// to greedy selection.
     #[arg(long, default_value_t = 1_000_000)]
     cap: u64,
+    /// Skip the post-placement refinement pass (swap descent) that runs
+    /// after the selection on greedy, mixed and batched runs.
+    #[arg(long)]
+    no_polish: bool,
     /// Print one line of machine-readable JSON instead of the human
     /// summary (for benchmarks and result collection).
     #[arg(long)]
@@ -205,10 +209,11 @@ fn run(args: &PlhsArgs) -> Result<String, CliError> {
     let params = doe_pool::format::parse_params(&root).map_err(validation)?;
     let designs = doe_pool::format::parse_designs(&root, &params).map_err(validation)?;
     let started = std::time::Instant::now();
+    let polish = !args.no_polish;
     let aug = if explore {
-        plhs::explore(&params, &designs, m, args.seed, args.cap).map_err(validation)?
+        plhs::explore(&params, &designs, m, args.seed, args.cap, polish).map_err(validation)?
     } else {
-        plhs::augment(&params, &designs, m, args.seed, args.cap).map_err(validation)?
+        plhs::augment(&params, &designs, m, args.seed, args.cap, polish).map_err(validation)?
     };
 
     if !args.no_backup {
@@ -223,7 +228,7 @@ fn run(args: &PlhsArgs) -> Result<String, CliError> {
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     if args.json {
-        let report = serde_json::json!({
+        let mut report = serde_json::json!({
             "subcommand": "plhs",
             "mode": if explore { "explore" } else { "add" },
             "file": args.file.display().to_string(),
@@ -236,18 +241,35 @@ fn run(args: &PlhsArgs) -> Result<String, CliError> {
             "n_params": params.len(),
             "strategy": aug.strategy.name(),
             "chunks": aug.chunks,
+            "polished": aug.polish.is_some(),
             "score": aug.score,
             "elapsed_ms": elapsed_ms,
         });
+        // the pass reports what it did; without it there is nothing to
+        // report (skipped or disabled)
+        if let Some(p) = &aug.polish {
+            report["polish_moves"] = serde_json::json!(p.moves);
+            report["polish_score_before"] = serde_json::json!(p.score_before);
+            report["polish_score_after"] = serde_json::json!(p.score_after);
+        }
         return Ok(report.to_string());
     }
 
-    Ok(format!(
+    let mut summary = format!(
         "{verb} {} designs (iteration {}), score {:.6}",
         aug.new_designs.len(),
         aug.iteration,
         aug.score
-    ))
+    );
+    if let Some(p) = &aug.polish {
+        if p.moves > 0 {
+            summary.push_str(&format!(
+                ", polished with {} swap(s) (was {:.6})",
+                p.moves, p.score_before
+            ));
+        }
+    }
+    Ok(summary)
 }
 
 /// Analyzes the pool and formats the statistics report: statistics of the

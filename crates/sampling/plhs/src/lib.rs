@@ -19,7 +19,9 @@
 //!    greedy sequential selection beyond it. Large runs are placed in
 //!    chunks sized so each chunk's search fits the greedy budget; at 50+
 //!    parameters that degenerates to the standard-LHS loop of one design
-//!    per chunk.
+//!    per chunk. After the chunk loop a deterministic swap descent (the
+//!    polish pass) refines the finished assignment; see
+//!    [`polish`](mod@crate::polish).
 //!
 //! All computation happens on the transformed `[0, 1]` values; real values
 //! are produced only for output.
@@ -53,7 +55,7 @@
 //!     Design { name: "0.2".into(), values: vec![4.0] },
 //!     Design { name: "0.3".into(), values: vec![7.0] },
 //! ];
-//! let aug = augment(&params, &designs, 2, 42, 1_000_000)?;
+//! let aug = augment(&params, &designs, 2, 42, 1_000_000, true)?;
 //! assert_eq!(aug.new_designs.len(), 2);
 //! // existing names use iteration 0, so the new ones are "1.1" and "1.2"
 //! assert_eq!(aug.new_designs[0].name, "1.1");
@@ -75,7 +77,7 @@
 //!     Design { name: "0.2".into(), values: vec![4.0] },
 //!     Design { name: "0.3".into(), values: vec![7.0] },
 //! ];
-//! let aug = explore(&params, &designs, 2, 42, 1_000_000)?;
+//! let aug = explore(&params, &designs, 2, 42, 1_000_000, true)?;
 //! // the new designs cover the full definition range [0.0, 10.0]
 //! for design in &aug.new_designs {
 //!     assert!((0.0..=10.0).contains(&design.values[0]));
@@ -84,12 +86,14 @@
 //! ```
 
 pub mod binning;
+pub mod polish;
 pub mod scoring;
 pub mod selection;
 
 pub use doe_types::error;
 pub use doe_types::scaling;
 pub use doe_types::{Design, Distribution, Error, Parameter, Result};
+pub use polish::PolishReport;
 
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -113,13 +117,23 @@ pub struct Augmentation {
     /// The number of chunks the `m` new designs were placed in (1 when
     /// the whole run fit a single selection).
     pub chunks: usize,
+    /// Report of the post-placement refinement pass, when it ran: the
+    /// swap descent over the finished assignment (see
+    /// [`polish`](mod@crate::polish)). `None` when the pass was
+    /// disabled or skipped — a single-chunk exact run is already
+    /// jointly optimal over the pass's swap space, so polishing it is
+    /// a provable no-op.
+    pub polish: Option<PolishReport>,
 }
 
 /// Samples `m` new designs for the given parameters, extending the Latin
 /// Hypercube inside each parameter's scope.
 ///
 /// `cap` is the maximum number of assignments enumerated exactly before
-/// falling back to greedy sequential selection.
+/// falling back to greedy sequential selection. `polish` runs the
+/// deterministic post-placement refinement pass (see
+/// [`polish`](mod@crate::polish)) unless the run is a single-chunk exact
+/// selection, which the pass provably cannot improve.
 ///
 /// # Batching
 ///
@@ -136,6 +150,17 @@ pub struct Augmentation {
 /// reports the pooled score over all pairs with all new designs and the
 /// aggregate strategy (`mixed` when the chunks differed).
 ///
+/// # Polish
+///
+/// Chunks are optimized one at a time, so the finished assignment is
+/// improvable even when every chunk ran exact: greedy chunks drift, and
+/// batched exact chunks are per-chunk optimal, never jointly. With
+/// `polish` enabled, a deterministic swap descent refines the finished
+/// assignment after the chunk loop, before any values materialize; its
+/// report is returned in [`Augmentation::polish`]. A single-chunk exact
+/// run skips the pass — exact already searched the whole assignment
+/// space, of which the descent's swap space is a subset.
+///
 /// # Errors
 ///
 /// Returns an [`Error`] for any validation problem: duplicate parameters,
@@ -149,6 +174,7 @@ pub fn augment(
     m: usize,
     seed: u64,
     cap: u64,
+    polish: bool,
 ) -> Result<Augmentation> {
     if params.is_empty() {
         return Err(Error::Invalid(
@@ -310,6 +336,24 @@ pub fn augment(
         }
     }
 
+    // Post-placement refinement (issue #24): chunks are optimized one at
+    // a time, so the finished assignment is improvable — greedy chunks
+    // drift, batched exact chunks are per-chunk optimal, never jointly.
+    // A single-chunk exact run is the exception: exact searched the whole
+    // assignment space, of which the descent's swap space is a subset,
+    // so polishing it is a provable no-op and is skipped to keep those
+    // outputs byte-exact.
+    let strategy = SelectionStrategy::aggregate(&strategies);
+    let polish_report = if polish && !(chunks == 1 && strategy == SelectionStrategy::Exact) {
+        Some(polish::polish(
+            &base_pairs,
+            &mut placed_t,
+            &mut placed_values,
+        ))
+    } else {
+        None
+    };
+
     // New designs and names (from the original names only, as before).
     let existing_names: Vec<&str> = designs.iter().map(|d| d.name.as_str()).collect();
     let mut iteration = next_iteration(existing_names.iter().copied());
@@ -331,12 +375,12 @@ pub fn augment(
         })
         .collect();
 
-    let strategy = SelectionStrategy::aggregate(&strategies);
-    let score = if chunks == 1 {
-        last_chunk_score
-    } else {
+    let score = match &polish_report {
+        // a polished run reports the score after the pass
+        Some(report) => report.score_after,
+        None if chunks == 1 => last_chunk_score,
         // Pooled final score: every base pair with all m placed designs.
-        assignment_score(&base_pairs, &placed_t, m)
+        None => assignment_score(&base_pairs, &placed_t, m),
     };
 
     Ok(Augmentation {
@@ -345,6 +389,7 @@ pub fn augment(
         iteration,
         strategy,
         chunks,
+        polish: polish_report,
     })
 }
 
@@ -421,7 +466,9 @@ pub fn next_iteration<'a>(names: impl IntoIterator<Item = &'a str>) -> u64 {
 /// pooled Latin Hypercube property) and the assignment minimizes the same
 /// pair-correlation score.
 ///
-/// `cap` and `seed` have the same meaning as in [`augment`].
+/// `cap` and `seed` have the same meaning as in [`augment`]; `polish`
+/// enables the post-placement refinement pass under the same
+/// applicability rule (never on a single-chunk exact run).
 ///
 /// # Errors
 ///
@@ -432,14 +479,123 @@ pub fn explore(
     m: usize,
     seed: u64,
     cap: u64,
+    polish: bool,
 ) -> Result<Augmentation> {
     let full: Vec<Parameter> = params.iter().map(Parameter::full_surface).collect();
-    augment(&full, designs, m, seed, cap)
+    augment(&full, designs, m, seed, cap, polish)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn polish_reports_for_greedy_runs_and_never_worsens() {
+        let params = vec![
+            Parameter::uniform("x", 0.0, 10.0)
+                .unwrap()
+                .with_scope(2.0, 8.0)
+                .unwrap(),
+            Parameter::uniform("y", 0.0, 10.0)
+                .unwrap()
+                .with_scope(3.0, 7.0)
+                .unwrap(),
+        ];
+        let designs: Vec<Design> = (0..8)
+            .map(|i| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![2.2 + i as f64 * 0.5, 3.1 + (i % 5) as f64 * 0.8],
+            })
+            .collect();
+        // cap 0 forces greedy: the run is polished by default
+        let plain = augment(&params, &designs, 2, 7, 0, false).unwrap();
+        let polished = augment(&params, &designs, 2, 7, 0, true).unwrap();
+        assert!(plain.polish.is_none(), "disabled polish reports None");
+        let report = polished
+            .polish
+            .as_ref()
+            .expect("greedy runs are polished by default");
+        assert_eq!(polished.strategy, SelectionStrategy::Greedy);
+        // the descent is monotone: the score after is never worse
+        assert!(
+            report.score_after <= report.score_before + 1e-12,
+            "polish worsened the score: {} -> {}",
+            report.score_before,
+            report.score_after
+        );
+        assert!(polished.score <= plain.score + 1e-12);
+        // the reported score is the post-polish score
+        assert_eq!(report.score_after, polished.score);
+    }
+
+    #[test]
+    fn polish_is_skipped_for_single_chunk_exact_runs() {
+        let params = vec![
+            Parameter::uniform("x", 0.0, 10.0)
+                .unwrap()
+                .with_scope(2.0, 8.0)
+                .unwrap(),
+            Parameter::gaussian("y", 0.0, 10.0, 5.0, 2.0)
+                .unwrap()
+                .with_scope(3.0, 7.0)
+                .unwrap(),
+        ];
+        let designs: Vec<Design> = (0..12)
+            .map(|i| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![2.2 + i as f64 * 0.5, 3.1 + (i % 5) as f64 * 0.8],
+            })
+            .collect();
+        // the exact enumeration already searched the whole assignment
+        // space, of which the polish swap space is a subset: the pass is
+        // a provable no-op and stays skipped (byte-exact outputs)
+        let aug = augment(&params, &designs, 3, 7, 1_000_000, true).unwrap();
+        assert_eq!(aug.strategy, SelectionStrategy::Exact);
+        assert_eq!(aug.chunks, 1);
+        assert!(aug.polish.is_none(), "exact single chunk is not polished");
+        let plain = augment(&params, &designs, 3, 7, 1_000_000, false).unwrap();
+        assert_eq!(aug.new_designs, plain.new_designs);
+        assert_eq!(aug.score, plain.score);
+    }
+
+    #[test]
+    fn polish_runs_on_batched_runs_and_keeps_the_lhs_property() {
+        // 15 parameters batch to chunks of 2: three designs = two
+        // chunks. The empty-bin cross product 3^15 exceeds the greedy
+        // budget, so the candidate set is restricted to 2 bins per
+        // parameter — P(2, 2)^15 = 32768 fits the cap and both chunks
+        // run exact. That makes this a batched-exact run: per-chunk
+        // optimal, never jointly, so the polish pass applies to it.
+        let params: Vec<Parameter> = (0..15)
+            .map(|j| Parameter::uniform(format!("p{j}"), 0.0, 10.0).unwrap())
+            .collect();
+        let plain = explore(&params, &[], 3, 1, 1_000_000, false).unwrap();
+        let polished = explore(&params, &[], 3, 1, 1_000_000, true).unwrap();
+        assert_eq!(plain.chunks, 2);
+        assert_eq!(plain.strategy, SelectionStrategy::Exact);
+        assert!(plain.polish.is_none());
+        let report = polished.polish.as_ref().expect("batched runs are polished");
+        assert_eq!(polished.strategy, SelectionStrategy::Exact);
+        assert!(
+            report.score_after <= report.score_before + 1e-12,
+            "polish worsened the score: {} -> {}",
+            report.score_before,
+            report.score_after
+        );
+        assert!(polished.score <= plain.score + 1e-12);
+        // Latin Hypercube: one design per bin per parameter, preserved
+        // structurally by every swap
+        for j in 0..15 {
+            let mut bins: Vec<usize> = polished
+                .new_designs
+                .iter()
+                .map(|d| (d.values[j] / 10.0 * 3.0) as usize)
+                .collect();
+            bins.sort_unstable();
+            bins.dedup();
+            assert_eq!(bins.len(), 3, "parameter {j}: designs share bins");
+        }
+    }
 
     #[test]
     fn next_iteration_detection() {
@@ -472,10 +628,10 @@ mod tests {
             })
             .collect();
         // few assignments on a small pool: exact enumeration runs
-        let a = augment(&params, &designs, 2, 7, 1_000_000).unwrap();
+        let a = augment(&params, &designs, 2, 7, 1_000_000, false).unwrap();
         assert_eq!(a.strategy, SelectionStrategy::Exact);
         // cap 0 forces greedy
-        let b = augment(&params, &designs, 2, 7, 0).unwrap();
+        let b = augment(&params, &designs, 2, 7, 0, false).unwrap();
         assert_eq!(b.strategy, SelectionStrategy::Greedy);
     }
 
@@ -501,7 +657,7 @@ mod tests {
                 values: vec![7.0],
             },
         ];
-        let aug = augment(&params, &designs, 2, 42, 1_000_000).unwrap();
+        let aug = augment(&params, &designs, 2, 42, 1_000_000, false).unwrap();
         assert_eq!(aug.new_designs.len(), 2);
         assert_eq!(aug.iteration, 1);
         // no pairs with a single parameter, so the score is 0
@@ -529,8 +685,8 @@ mod tests {
                 values: vec![2.2 + i as f64 * 0.5, 3.1 + (i % 5) as f64 * 0.8],
             })
             .collect();
-        let a = augment(&params, &designs, 3, 7, 1_000_000).unwrap();
-        let b = augment(&params, &designs, 3, 7, 1_000_000).unwrap();
+        let a = augment(&params, &designs, 3, 7, 1_000_000, false).unwrap();
+        let b = augment(&params, &designs, 3, 7, 1_000_000, false).unwrap();
         assert_eq!(a.new_designs, b.new_designs);
         assert_eq!(a.score, b.score);
     }
@@ -538,13 +694,13 @@ mod tests {
     #[test]
     fn augment_rejects_bad_input() {
         let params = vec![Parameter::uniform("x", 0.0, 1.0).unwrap()];
-        assert!(augment(&params, &[], 0, 1, 100).is_err());
-        assert!(augment(&[], &[], 1, 1, 100).is_err());
+        assert!(augment(&params, &[], 0, 1, 100, false).is_err());
+        assert!(augment(&[], &[], 1, 1, 100, false).is_err());
         let bad = Design {
             name: "d".into(),
             values: vec![0.5, 0.5],
         };
-        assert!(augment(&params, &[bad], 1, 1, 100).is_err());
+        assert!(augment(&params, &[bad], 1, 1, 100, false).is_err());
         // too few shared in-scope designs for a pair
         let designs = vec![
             Design {
@@ -560,7 +716,7 @@ mod tests {
             Parameter::uniform("x", 0.0, 1.0).unwrap(),
             Parameter::uniform("y", 0.0, 1.0).unwrap(),
         ];
-        assert!(augment(&two, &designs, 1, 1, 100).is_err());
+        assert!(augment(&two, &designs, 1, 1, 100, false).is_err());
     }
 
     #[test]
@@ -582,7 +738,7 @@ mod tests {
             })
             .collect();
 
-        let aug = explore(&params, &designs, 3, 42, 1_000_000).unwrap();
+        let aug = explore(&params, &designs, 3, 42, 1_000_000, false).unwrap();
         assert_eq!(aug.new_designs.len(), 3);
         // 6 equal-width bins over the full [0, 10]; the three designs share
         // one bin, so the first three empty bins are 0, 1, 2 (single
@@ -631,7 +787,7 @@ mod tests {
             })
             .collect();
 
-        let aug = explore(&params, &designs, 3, 7, 1_000_000).unwrap();
+        let aug = explore(&params, &designs, 3, 7, 1_000_000, false).unwrap();
         // all 12 designs are in scope for the full-surface parameter:
         // 12 + 3 = 15 bins of width 10/15; the new values avoid the
         // occupied bins and stay inside the full range
@@ -661,7 +817,7 @@ mod tests {
             Parameter::uniform("param_uniform", 0.0, 10.0).unwrap(),
             Parameter::gaussian("param_gaussian", 0.0, 10.0, 5.0, 2.0).unwrap(),
         ];
-        let aug = explore(&params, &[], 10, 42, 1_000_000).unwrap();
+        let aug = explore(&params, &[], 10, 42, 1_000_000, false).unwrap();
         assert_eq!(aug.new_designs.len(), 10);
         assert_eq!(aug.iteration, 1);
         for (i, design) in aug.new_designs.iter().enumerate() {
@@ -682,7 +838,7 @@ mod tests {
             Parameter::uniform("y", 0.0, 10.0).unwrap(),
         ];
         let m = 200;
-        let aug = explore(&params, &[], m, 42, 1_000_000).unwrap();
+        let aug = explore(&params, &[], m, 42, 1_000_000, false).unwrap();
         assert_eq!(aug.new_designs.len(), m);
         assert_eq!(aug.iteration, 1);
         assert!(aug.score.is_finite() && aug.score >= 0.0);
@@ -713,7 +869,7 @@ mod tests {
             Parameter::uniform("x", 0.0, 10.0).unwrap(),
             Parameter::uniform("y", 0.0, 10.0).unwrap(),
         ];
-        let aug = augment(&params, &[], 5, 42, 1_000_000).unwrap();
+        let aug = augment(&params, &[], 5, 42, 1_000_000, false).unwrap();
         assert_eq!(aug.new_designs.len(), 5);
         assert_eq!(aug.iteration, 1);
     }
@@ -727,7 +883,7 @@ mod tests {
         let params: Vec<Parameter> = (0..50)
             .map(|j| Parameter::uniform(format!("p{j}"), 0.0, 10.0).unwrap())
             .collect();
-        let aug = explore(&params, &[], 6, 1, 1_000_000).unwrap();
+        let aug = explore(&params, &[], 6, 1, 1_000_000, false).unwrap();
         assert_eq!(aug.new_designs.len(), 6);
         assert_eq!(aug.iteration, 1);
         // 2^50 already exceeds the greedy budget: one design per chunk
@@ -769,7 +925,7 @@ mod tests {
                     .unwrap()
             })
             .collect();
-        let aug = augment(&params, &[], 4, 1, 1_000_000).unwrap();
+        let aug = augment(&params, &[], 4, 1, 1_000_000, false).unwrap();
         assert_eq!(aug.new_designs.len(), 4);
         assert_eq!(aug.chunks, 4);
         for design in &aug.new_designs {
@@ -802,10 +958,10 @@ mod tests {
                 values: vec![2.2 + i as f64 * 0.5, 3.1 + (i % 5) as f64 * 0.8],
             })
             .collect();
-        let aug = augment(&params, &designs, 3, 7, 1_000_000).unwrap();
+        let aug = augment(&params, &designs, 3, 7, 1_000_000, false).unwrap();
         assert_eq!(aug.chunks, 1);
         // deterministic as before
-        let again = augment(&params, &designs, 3, 7, 1_000_000).unwrap();
+        let again = augment(&params, &designs, 3, 7, 1_000_000, false).unwrap();
         assert_eq!(aug.new_designs, again.new_designs);
         assert_eq!(aug.score, again.score);
     }
@@ -828,8 +984,8 @@ mod tests {
                 values: vec![0.5 + i as f64 * 0.7, (i % 10) as f64 * 0.9 + 0.5],
             })
             .collect();
-        let a = explore(&params, &designs, 3, 7, 1_000_000).unwrap();
-        let b = explore(&params, &designs, 3, 7, 1_000_000).unwrap();
+        let a = explore(&params, &designs, 3, 7, 1_000_000, false).unwrap();
+        let b = explore(&params, &designs, 3, 7, 1_000_000, false).unwrap();
         assert_eq!(a.new_designs, b.new_designs);
         assert_eq!(a.score, b.score);
     }
