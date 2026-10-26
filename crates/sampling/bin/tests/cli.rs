@@ -509,10 +509,19 @@ fn stats_without_results_reports_sampling_points() {
         "stdout: {stdout}"
     );
     assert!(
+        stdout.contains("mean pairwise distance: "),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("median pairwise distance: "),
+        "stdout: {stdout}"
+    );
+    assert!(
         stdout.contains("mean nearest neighbor: "),
         "stdout: {stdout}"
     );
     assert!(stdout.contains("discrepancy (CL2): "), "stdout: {stdout}");
+    assert!(stdout.contains("pooled pair r2: "), "stdout: {stdout}");
     assert!(stdout.contains("x vs y: pearson "), "stdout: {stdout}");
     // no result variable exists, so none is reported
     assert!(!stdout.contains("energy"), "stdout: {stdout}");
@@ -554,6 +563,14 @@ fn stats_single_design_reports_na_distances() {
         "stdout: {stdout}"
     );
     assert!(
+        stdout.contains("mean pairwise distance: n/a"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("median pairwise distance: n/a"),
+        "stdout: {stdout}"
+    );
+    assert!(
         stdout.contains("mean nearest neighbor: n/a"),
         "stdout: {stdout}"
     );
@@ -561,6 +578,8 @@ fn stats_single_design_reports_na_distances() {
         stdout.contains("discrepancy (CL2): 0.288675"),
         "stdout: {stdout}"
     );
+    // a single design cannot correlate with itself
+    assert!(stdout.contains("pooled pair r2: n/a"), "stdout: {stdout}");
     fs::remove_dir_all(&dir).ok();
 }
 
@@ -740,8 +759,11 @@ fn stats_json_reports_the_full_pool_analysis() {
     assert_eq!(params[0]["deciles"].as_array().unwrap().len(), 10);
     assert!(params[0]["outer_deciles"].as_u64().is_some());
     assert!(pool["min_pairwise_distance"].is_number());
+    assert!(pool["mean_pairwise_distance"].is_number());
+    assert!(pool["median_pairwise_distance"].is_number());
     assert!(pool["mean_nearest_neighbor"].is_number());
     assert!(pool["discrepancy_cl2"].is_number());
+    assert!(pool["pooled_pair_r2"].is_number());
     let pairs = pool["pairs"].as_array().unwrap();
     assert_eq!(pairs.len(), 1);
     assert_eq!(pairs[0]["a"], "x");

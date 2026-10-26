@@ -15,10 +15,12 @@
 //! expensive simulations are run): statistics of the sampling points
 //! themselves — per-parameter descriptive statistics, decile coverage and
 //! outer-decile counts of the definition range, space-filling metrics in
-//! the unit cube (min pairwise distance, mean nearest-neighbor distance,
-//! centered L2 discrepancy) and pairwise parameter correlations — plus,
-//! when results exist, coverage, per-parameter correlations, scope split
-//! and decile means per result variable.
+//! the unit cube (min/mean/median pairwise distance, mean
+//! nearest-neighbor distance, centered L2 discrepancy) and pairwise
+//! parameter correlations — plus, when results exist, coverage,
+//! per-parameter correlations, scope split and decile means per result
+//! variable. The pooled pair r2 (the sum of squared pair correlations,
+//! the plhs score) is readable back on the pool.
 //!
 //! Every subcommand that produces a result accepts `--json`: one line of
 //! machine-readable JSON on stdout instead of the human output, so runs
@@ -348,6 +350,14 @@ fn format_stats_report(
         Some(d) => out.push_str(&format!("  min pairwise distance: {d:.6}\n")),
         None => out.push_str("  min pairwise distance: n/a (single design)\n"),
     }
+    match pool.mean_pairwise_distance {
+        Some(d) => out.push_str(&format!("  mean pairwise distance: {d:.6}\n")),
+        None => out.push_str("  mean pairwise distance: n/a (single design)\n"),
+    }
+    match pool.median_pairwise_distance {
+        Some(d) => out.push_str(&format!("  median pairwise distance: {d:.6}\n")),
+        None => out.push_str("  median pairwise distance: n/a (single design)\n"),
+    }
     match pool.mean_nearest_neighbor {
         Some(d) => out.push_str(&format!("  mean nearest neighbor: {d:.6}\n")),
         None => out.push_str("  mean nearest neighbor: n/a (single design)\n"),
@@ -356,6 +366,10 @@ fn format_stats_report(
         "  discrepancy (CL2): {:.6}\n",
         pool.discrepancy_cl2
     ));
+    match pool.pooled_pair_r2 {
+        Some(s) => out.push_str(&format!("  pooled pair r2: {s:.6}\n")),
+        None => out.push_str("  pooled pair r2: n/a (n < 3, single parameter or no variance)\n"),
+    }
     for pair in &pool.pairs {
         match (pair.pearson, pair.spearman) {
             (Some(pe), Some(se)) => out.push_str(&format!(

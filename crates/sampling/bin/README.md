@@ -135,13 +135,21 @@ evaluated count and the context number of designs per parameter:
 3. Space-filling metrics over all designs in the unit cube (every
    parameter linearly scaled to [0, 1] of its definition range, so
    mixed units stay comparable): the minimal pairwise distance (near
-   zero means near-duplicate parameter sets) and the mean
-   nearest-neighbor distance (clumping); both n/a for a single design.
+   zero means near-duplicate parameter sets), the mean and median
+   pairwise distance (the typical spread; the median is robust against
+   a few extreme outliers) and the mean nearest-neighbor distance
+   (clumping); all n/a for a single design.
 4. The centered L2 discrepancy (CL2, Hickernell) in the same normalized
    space: a single uniformity number for the whole pool, comparable
    between candidate pools — run `--explore` with a different `--seed`
    and compare; lower is better.
-5. Per parameter pair: Pearson and Spearman correlation between the
+5. The pooled pair r2: the sum of squared Pearson correlations over
+   all parameter pairs — the score `plhs` optimizes and reports as
+   `score S`, readable back on the pool (identical on pools without
+   scopes; `plhs` scores the in-scope series). Pairs with an undefined
+   correlation count as 0, as in the plhs scoring; n/a when no pair
+   correlation is defined at all.
+6. Per parameter pair: Pearson and Spearman correlation between the
    parameter values (n/a below 3 designs or without variance).
 
 Statistics of the evaluated `results` (reported only when `results`
@@ -165,6 +173,25 @@ correlate. The tool reports statistics; the judgment — run expensive
 simulations or not, where to set the scope for `--add` — stays with you.
 Exit codes as above; a pool with no designs at all, or a result name
 that matches no design, is a validation error (exit 1).
+
+### Which metric matters for which purpose
+
+All metrics are always reported; the tool never filters or ranks. Which
+ones to read first depends on what the designs are for:
+
+| Purpose | Read first |
+| --- | --- |
+| Surrogate model / response surface | min pairwise distance, discrepancy (CL2), decile counts |
+| Sensitivity analysis | pair correlations (Pearson/Spearman), pooled pair r2 |
+| Optimization | decile counts, min pairwise distance (coverage plus resolution) |
+| Monte-Carlo simulation | discrepancy (CL2), descriptive statistics (representativity) |
+| Boundary / robustness tests | outer deciles, min/max per parameter |
+
+Note that an evenly distributed point set is not automatically a good
+design for estimating specific effects: classical factorial designs and
+variance analyses need orthogonality, model-matrix rank and
+D-efficiency — criteria outside doe-kit's scope of space-filling
+sampling.
 
 ## JSON format
 
