@@ -13,11 +13,13 @@
 //! - [`analyze_pool`]: statistics of the sampling points themselves
 //!   (the pool's designs) — per-parameter descriptive statistics, decile
 //!   coverage and outer-decile counts of the definition range, space-
-//!   filling metrics in the unit cube (min pairwise distance, mean
-//!   nearest-neighbor distance, centered L2 discrepancy) and Pearson and
-//!   Spearman correlation per parameter pair. It answers "how well are
-//!   the generated sampling points distributed, and do they correlate?"
-//!   before anything has been evaluated.
+//!   filling metrics in the unit cube (min, mean and median pairwise
+//!   distance, mean nearest-neighbor distance, centered L2
+//!   discrepancy), Pearson and Spearman correlation per parameter
+//!   pair, and the pooled pair r2 (the plhs score readable back on the
+//!   pool). It answers "how well are the generated sampling points
+//!   distributed, and do they correlate?" before anything has been
+//!   evaluated.
 //! - Per result variable: coverage (evaluated vs total designs) and
 //!   descriptive statistics (min, max, mean, sample std, median).
 //! - Per parameter: Pearson and Spearman correlation with the result
@@ -109,6 +111,15 @@ pub struct PoolStats {
     /// range); `None` for fewer than 2 designs. Near zero means
     /// near-duplicate parameter sets.
     pub min_pairwise_distance: Option<f64>,
+    /// Mean of all pairwise Euclidean distances between the designs in
+    /// the same normalized space; `None` for fewer than 2 designs. The
+    /// typical spread of the sampling points — the context in which
+    /// `min_pairwise_distance` is read.
+    pub mean_pairwise_distance: Option<f64>,
+    /// Median of all pairwise Euclidean distances, same normalized
+    /// space; `None` for fewer than 2 designs. Robust against a few
+    /// extreme outliers stretching the mean.
+    pub median_pairwise_distance: Option<f64>,
     /// Mean over all designs of the distance to the nearest other design,
     /// in the same normalized space; `None` for fewer than 2 designs.
     pub mean_nearest_neighbor: Option<f64>,
@@ -119,6 +130,15 @@ pub struct PoolStats {
     /// Correlation between the sampling points of each parameter pair
     /// (`a` precedes `b` in the input parameter order).
     pub pairs: Vec<PairCorrelation>,
+    /// Sum of squared Pearson correlations over all parameter pairs —
+    /// the score `plhs` optimizes and reports, readable back on the
+    /// pool. Identical to the `plhs` score on pools without scopes
+    /// (Pearson is invariant to the linear scope transform, but `plhs`
+    /// scores the in-scope series). Pairs with an undefined correlation
+    /// contribute `0.0`, exactly like the plhs scoring; `None` when no
+    /// pair correlation is defined at all (fewer than 3 designs, a
+    /// single parameter, or no variance in any pair).
+    pub pooled_pair_r2: Option<f64>,
 }
 
 /// Descriptive statistics of one parameter's sampling points.
@@ -231,10 +251,15 @@ pub fn analyze_pool(params: &[Parameter], designs: &[Design]) -> Result<PoolStat
                 .collect()
         })
         .collect();
-    let (min_pairwise_distance, mean_nearest_neighbor) = if designs.len() < 2 {
-        (None, None)
+    let (
+        min_pairwise_distance,
+        mean_pairwise_distance,
+        median_pairwise_distance,
+        mean_nearest_neighbor,
+    ) = if designs.len() < 2 {
+        (None, None, None, None)
     } else {
-        let mut min_pair = f64::INFINITY;
+        let mut pair_distances = Vec::with_capacity(designs.len() * (designs.len() - 1) / 2);
         let mut nn_sum = 0.0;
         for (i, u) in unit.iter().enumerate() {
             let mut nearest = f64::INFINITY;
@@ -243,12 +268,27 @@ pub fn analyze_pool(params: &[Parameter], designs: &[Design]) -> Result<PoolStat
                     continue;
                 }
                 let d = distance(u, v);
-                min_pair = min_pair.min(d);
+                if j > i {
+                    pair_distances.push(d);
+                }
                 nearest = nearest.min(d);
             }
             nn_sum += nearest;
         }
-        (Some(min_pair), Some(nn_sum / designs.len() as f64))
+        pair_distances.sort_by(|a, b| a.partial_cmp(b).expect("distances are finite"));
+        let count = pair_distances.len();
+        let mean = pair_distances.iter().sum::<f64>() / count as f64;
+        let median = if count % 2 == 1 {
+            pair_distances[count / 2]
+        } else {
+            (pair_distances[count / 2 - 1] + pair_distances[count / 2]) / 2.0
+        };
+        (
+            Some(pair_distances[0]),
+            Some(mean),
+            Some(median),
+            Some(nn_sum / designs.len() as f64),
+        )
     };
     let discrepancy_cl2 = centered_l2_discrepancy(&unit);
 
@@ -269,13 +309,29 @@ pub fn analyze_pool(params: &[Parameter], designs: &[Design]) -> Result<PoolStat
         }
     }
 
+    // the plhs score, read back on the pool: sum of squared Pearson
+    // correlations over all pairs; undefined pairs contribute 0.0 (the
+    // plhs convention), and the line is n/a when no pair is defined
+    let mut pooled_pair_r2 = 0.0;
+    let mut any_pair_defined = false;
+    for pair in &pairs {
+        if let Some(r) = pair.pearson {
+            pooled_pair_r2 += r * r;
+            any_pair_defined = true;
+        }
+    }
+    let pooled_pair_r2 = any_pair_defined.then_some(pooled_pair_r2);
+
     Ok(PoolStats {
         total: designs.len(),
         parameters,
         min_pairwise_distance,
+        mean_pairwise_distance,
+        median_pairwise_distance,
         mean_nearest_neighbor,
         discrepancy_cl2,
         pairs,
+        pooled_pair_r2,
     })
 }
 
@@ -806,6 +862,8 @@ mod tests {
         let pool = analyze_pool(&params, &designs).unwrap();
         // no pair of designs: distances are undefined
         assert_eq!(pool.min_pairwise_distance, None);
+        assert_eq!(pool.mean_pairwise_distance, None);
+        assert_eq!(pool.median_pairwise_distance, None);
         assert_eq!(pool.mean_nearest_neighbor, None);
         // one point at the center of the unit cube: CL2 = sqrt(1/12)
         assert!((pool.discrepancy_cl2 - (1.0_f64 / 12.0).sqrt()).abs() < 1e-12);
@@ -827,6 +885,8 @@ mod tests {
         let pool = analyze_pool(&params, &designs).unwrap();
         // normalized to u = 0 and u = 1: distance 1
         assert!((pool.min_pairwise_distance.unwrap() - 1.0).abs() < 1e-12);
+        assert!((pool.mean_pairwise_distance.unwrap() - 1.0).abs() < 1e-12);
+        assert!((pool.median_pairwise_distance.unwrap() - 1.0).abs() < 1e-12);
         assert!((pool.mean_nearest_neighbor.unwrap() - 1.0).abs() < 1e-12);
         // two points at the extremes of [0, 1]: CL2 = sqrt(1/3)
         assert!((pool.discrepancy_cl2 - (1.0_f64 / 3.0).sqrt()).abs() < 1e-12);
@@ -881,6 +941,44 @@ mod tests {
     }
 
     #[test]
+    fn mean_and_median_pairwise_distance_are_hand_computed() {
+        let params = vec![param("x", 0.0, 10.0)];
+        // normalized to u = 0.1, 0.2, 0.5, 0.9
+        let designs: Vec<Design> = [1.0, 2.0, 5.0, 9.0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, x)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![x],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &designs).unwrap();
+        // pairwise distances: 0.1, 0.4, 0.8, 0.3, 0.7, 0.4
+        assert!((pool.min_pairwise_distance.unwrap() - 0.1).abs() < 1e-12);
+        assert!((pool.mean_pairwise_distance.unwrap() - 2.7 / 6.0).abs() < 1e-12);
+        // sorted: 0.1, 0.3, 0.4, 0.4, 0.7, 0.8 — even count, midpoint
+        assert!((pool.median_pairwise_distance.unwrap() - 0.4).abs() < 1e-12);
+    }
+
+    #[test]
+    fn median_pairwise_distance_of_an_odd_count_is_the_middle_value() {
+        let params = vec![param("x", 0.0, 10.0)];
+        // normalized to u = 0.1, 0.3, 0.6
+        let designs: Vec<Design> = [1.0, 3.0, 6.0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, x)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![x],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &designs).unwrap();
+        // pairwise distances: 0.2, 0.5, 0.3 — sorted 0.2, 0.3, 0.5
+        assert!((pool.mean_pairwise_distance.unwrap() - 1.0 / 3.0).abs() < 1e-12);
+        assert!((pool.median_pairwise_distance.unwrap() - 0.3).abs() < 1e-12);
+    }
+
+    #[test]
     fn pool_analysis_correlates_parameter_pairs() {
         let params = vec![param("x", 0.0, 10.0), param("y", 0.0, 10.0)];
         // y = 2x: perfectly linear pair
@@ -925,6 +1023,92 @@ mod tests {
         let pool = analyze_pool(&params, &flat).unwrap();
         assert_eq!(pool.pairs[0].pearson, None);
         assert_eq!(pool.pairs[0].spearman, None);
+    }
+
+    #[test]
+    fn pooled_pair_r2_sums_squared_pearson_over_all_pairs() {
+        let params = vec![
+            param("x", 0.0, 10.0),
+            param("y", 0.0, 10.0),
+            param("z", 0.0, 10.0),
+        ];
+        // y = 2x and z = -x + 4: every pair is perfectly (anti-)correlated
+        let designs: Vec<Design> = [1.0, 2.0, 3.0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, x)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![x, 2.0 * x, 4.0 - x],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &designs).unwrap();
+        // three pairs, each with r^2 = 1: the sum is 3
+        assert!((pool.pooled_pair_r2.unwrap() - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn pooled_pair_r2_counts_undefined_pairs_as_zero() {
+        let params = vec![
+            param("x", 0.0, 10.0),
+            param("y", 0.0, 10.0),
+            param("z", 0.0, 10.0),
+        ];
+        // x is flat: its pairs are undefined and contribute nothing; y = z
+        // contributes r^2 = 1
+        let designs: Vec<Design> = [1.0, 2.0, 3.0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, y)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![5.0, y, 2.0 * y],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &designs).unwrap();
+        assert_eq!(pool.pairs[2].a, "y");
+        assert_eq!(pool.pairs[2].b, "z");
+        assert!((pool.pooled_pair_r2.unwrap() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn pooled_pair_r2_is_none_when_no_pair_is_defined() {
+        // a single parameter: there is no pair at all
+        let params = vec![param("x", 0.0, 10.0)];
+        let designs: Vec<Design> = [1.0, 2.0, 3.0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, x)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![x],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &designs).unwrap();
+        assert_eq!(pool.pooled_pair_r2, None);
+
+        // two designs: n < 3, no pair correlation is defined
+        let params = vec![param("x", 0.0, 10.0), param("y", 0.0, 10.0)];
+        let designs: Vec<Design> = [1.0, 2.0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, x)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![x, 2.0 * x],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &designs).unwrap();
+        assert_eq!(pool.pooled_pair_r2, None);
+
+        // a flat parameter and its only partner: the single pair is
+        // undefined, so nothing is defined
+        let designs: Vec<Design> = [1.0, 2.0, 3.0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, y)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![5.0, y],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &designs).unwrap();
+        assert_eq!(pool.pooled_pair_r2, None);
     }
 
     #[test]
