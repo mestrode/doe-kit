@@ -13,20 +13,22 @@
 //!
 //! `sampling stats` analyzes the pool (read-only judgment support before
 //! expensive simulations are run): statistics of the sampling points
-//! themselves — per-parameter descriptive statistics, decile coverage and
-//! outer-decile counts of the definition range, space-filling metrics in
-//! the unit cube (min/mean/median pairwise distance, mean
-//! nearest-neighbor distance, centered L2 discrepancy) and pairwise
-//! parameter correlations — plus, when results exist, coverage,
-//! per-parameter correlations, scope split and decile means per result
-//! variable. The pooled pair r2 (the sum of squared pair correlations,
-//! the plhs score) is readable back on the pool.
+//! themselves — space-filling metrics in the unit cube (min/mean/median
+//! pairwise distance, mean nearest-neighbor distance, centered L2
+//! discrepancy, the pooled pair r2 that plhs optimizes) plus the
+//! occupancy and pair summaries — and, when results exist, one summary
+//! line per result variable. `--verbose` switches to the full tier:
+//! per-parameter descriptive statistics, decile coverage and
+//! outer-decile counts, the complete pair list and the per-parameter
+//! result blocks.
 //!
 //! Every subcommand that produces a result accepts `--json`: one line of
 //! machine-readable JSON on stdout instead of the human output, so runs
 //! can be collected line by line (benchmarks, result files). Errors stay
 //! human on stderr with the usual exit codes; `--json` only changes the
-//! success output.
+//! success output. Subcommands with detail depth follow one tiering:
+//! the default output is compact, `--verbose` switches to full detail —
+//! for the human report and for `--json` alike.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -109,6 +111,13 @@ struct StatsArgs {
     /// report (for benchmarks and result collection).
     #[arg(long)]
     json: bool,
+    /// Switch to the full detail tier: per-parameter descriptive
+    /// statistics and decile counts, the complete pair list and the
+    /// per-parameter blocks of the result variables. The default
+    /// output is compact; applies to the human report and `--json`
+    /// alike.
+    #[arg(long)]
+    verbose: bool,
 }
 
 fn main() -> ExitCode {
@@ -291,18 +300,44 @@ fn run_stats(args: &StatsArgs) -> Result<String, CliError> {
     };
     let pool = doe_stats::analyze_pool(&params, &designs).map_err(validation)?;
     if args.json {
+        let mut pool_v = serde_json::to_value(&pool)
+            .map_err(|e| validation(plhs::Error::Invalid(e.to_string())))?;
+        let mut results_v = serde_json::to_value(&stats)
+            .map_err(|e| validation(plhs::Error::Invalid(e.to_string())))?;
+        if !args.verbose {
+            // compact tier: global metrics and summary fields only —
+            // the per-parameter details and the pair list are dropped
+            let n_pairs = pool_v["pairs"].as_array().map_or(0, Vec::len);
+            let obj = pool_v
+                .as_object_mut()
+                .expect("PoolStats serializes to an object");
+            obj.remove("parameters");
+            obj.remove("pairs");
+            obj.insert("n_pairs".to_owned(), serde_json::json!(n_pairs));
+            if let Some(results) = results_v.as_array_mut() {
+                for entry in results {
+                    entry
+                        .as_object_mut()
+                        .expect("VariableStats serializes to an object")
+                        .remove("parameters");
+                }
+            }
+        }
         let report = serde_json::json!({
             "subcommand": "stats",
             "file": args.file.display().to_string(),
             "evaluated": results.len(),
-            "pool": serde_json::to_value(&pool)
-                .map_err(|e| validation(plhs::Error::Invalid(e.to_string())))?,
-            "results": serde_json::to_value(&stats)
-                .map_err(|e| validation(plhs::Error::Invalid(e.to_string())))?,
+            "pool": pool_v,
+            "results": results_v,
         });
         return Ok(report.to_string());
     }
-    Ok(format_stats_report(&pool, &stats, results.len()))
+    Ok(format_stats_report(
+        &pool,
+        &stats,
+        results.len(),
+        args.verbose,
+    ))
 }
 
 /// Formats `n / k` as a context number: an integer when it divides
@@ -320,11 +355,15 @@ fn designs_per_parameter(designs: usize, parameters: usize) -> String {
 
 /// Formats the statistics as a human-readable report: one block for the
 /// sampling points, then one block per result variable. Statistics only,
-/// the judgment stays with the reader.
+/// the judgment stays with the reader. The default is the compact tier
+/// (global metrics and summary lines); `verbose` adds the per-parameter
+/// descriptive statistics and decile counts, the complete pair list and
+/// the per-parameter blocks of the result variables.
 fn format_stats_report(
     pool: &doe_stats::PoolStats,
     stats: &[doe_stats::VariableStats],
     evaluated: usize,
+    verbose: bool,
 ) -> String {
     let mut out = String::new();
     let parameters = pool.parameters.len();
@@ -334,17 +373,19 @@ fn format_stats_report(
         designs_per_parameter(pool.total, parameters)
     ));
     out.push_str("sampling points:\n");
-    for p in &pool.parameters {
-        out.push_str(&format!(
-            "  {}: n={}, min {:.6}, max {:.6}, mean {:.6}, median {:.6}, std {:.6}\n",
-            p.name, p.n, p.min, p.max, p.mean, p.median, p.std
-        ));
-        let deciles: Vec<String> = p.deciles.iter().map(|c| c.to_string()).collect();
-        out.push_str(&format!(
-            "     decile counts: [{}], outer deciles: {}\n",
-            deciles.join(", "),
-            p.outer_deciles
-        ));
+    if verbose {
+        for p in &pool.parameters {
+            out.push_str(&format!(
+                "  {}: n={}, min {:.6}, max {:.6}, mean {:.6}, median {:.6}, std {:.6}\n",
+                p.name, p.n, p.min, p.max, p.mean, p.median, p.std
+            ));
+            let deciles: Vec<String> = p.deciles.iter().map(|c| c.to_string()).collect();
+            out.push_str(&format!(
+                "     decile counts: [{}], outer deciles: {}\n",
+                deciles.join(", "),
+                p.outer_deciles
+            ));
+        }
     }
     match pool.min_pairwise_distance {
         Some(d) => out.push_str(&format!("  min pairwise distance: {d:.6}\n")),
@@ -370,16 +411,36 @@ fn format_stats_report(
         Some(s) => out.push_str(&format!("  pooled pair r2: {s:.6}\n")),
         None => out.push_str("  pooled pair r2: n/a (n < 3, single parameter or no variance)\n"),
     }
-    for pair in &pool.pairs {
-        match (pair.pearson, pair.spearman) {
-            (Some(pe), Some(se)) => out.push_str(&format!(
-                "  {} vs {}: pearson {pe:.6}, spearman {se:.6}\n",
-                pair.a, pair.b
-            )),
-            _ => out.push_str(&format!(
-                "  {} vs {}: pearson n/a, spearman n/a (n < 3 or no variance)\n",
-                pair.a, pair.b
-            )),
+    // compact occupancy and pair summaries — readable in the default
+    // tier, where the per-parameter decile counts and the pair list
+    // are not shown
+    out.push_str(&format!(
+        "  empty decile slots: {} of {}\n",
+        pool.empty_decile_slots,
+        parameters * doe_stats::DECILES
+    ));
+    let max_of = |v: Option<f64>| match v {
+        Some(x) => format!("{x:.6}"),
+        None => "n/a".to_owned(),
+    };
+    out.push_str(&format!(
+        "  pairs: {}, max |pearson| {}, max |spearman| {}\n",
+        pool.pairs.len(),
+        max_of(pool.max_abs_pearson),
+        max_of(pool.max_abs_spearman)
+    ));
+    if verbose {
+        for pair in &pool.pairs {
+            match (pair.pearson, pair.spearman) {
+                (Some(pe), Some(se)) => out.push_str(&format!(
+                    "  {} vs {}: pearson {pe:.6}, spearman {se:.6}\n",
+                    pair.a, pair.b
+                )),
+                _ => out.push_str(&format!(
+                    "  {} vs {}: pearson n/a, spearman n/a (n < 3 or no variance)\n",
+                    pair.a, pair.b
+                )),
+            }
         }
     }
     for v in stats {
@@ -387,41 +448,43 @@ fn format_stats_report(
             "{}: n={}, min {:.6}, max {:.6}, mean {:.6}, median {:.6}, std {:.6}\n",
             v.name, v.n, v.min, v.max, v.mean, v.median, v.std
         ));
-        for p in &v.parameters {
-            match (p.pearson, p.spearman) {
-                (Some(pe), Some(se)) => {
-                    out.push_str(&format!(
-                        "  {}: pearson {pe:.6}, spearman {se:.6}\n",
-                        p.name
-                    ));
+        if verbose {
+            for p in &v.parameters {
+                match (p.pearson, p.spearman) {
+                    (Some(pe), Some(se)) => {
+                        out.push_str(&format!(
+                            "  {}: pearson {pe:.6}, spearman {se:.6}\n",
+                            p.name
+                        ));
+                    }
+                    _ => {
+                        out.push_str(&format!(
+                            "  {}: pearson n/a, spearman n/a (n < 3 or no variance)\n",
+                            p.name
+                        ));
+                    }
                 }
-                _ => {
-                    out.push_str(&format!(
-                        "  {}: pearson n/a, spearman n/a (n < 3 or no variance)\n",
-                        p.name
-                    ));
+                out.push_str(&format!(
+                    "     in scope: {} evaluated, mean {:.6}, std {:.6}\n",
+                    p.in_scope.count, p.in_scope.mean, p.in_scope.std
+                ));
+                match &p.out_of_scope {
+                    Some(o) => out.push_str(&format!(
+                        "     outside scope: {} evaluated, mean {:.6}, std {:.6}\n",
+                        o.count, o.mean, o.std
+                    )),
+                    None => out.push_str("     outside scope: none evaluated\n"),
                 }
+                let deciles: Vec<String> = p
+                    .deciles
+                    .iter()
+                    .map(|d| match d.mean {
+                        Some(m) => format!("{m:.6}"),
+                        None => "-".to_owned(),
+                    })
+                    .collect();
+                out.push_str(&format!("     deciles: [{}]\n", deciles.join(", ")));
             }
-            out.push_str(&format!(
-                "     in scope: {} evaluated, mean {:.6}, std {:.6}\n",
-                p.in_scope.count, p.in_scope.mean, p.in_scope.std
-            ));
-            match &p.out_of_scope {
-                Some(o) => out.push_str(&format!(
-                    "     outside scope: {} evaluated, mean {:.6}, std {:.6}\n",
-                    o.count, o.mean, o.std
-                )),
-                None => out.push_str("     outside scope: none evaluated\n"),
-            }
-            let deciles: Vec<String> = p
-                .deciles
-                .iter()
-                .map(|d| match d.mean {
-                    Some(m) => format!("{m:.6}"),
-                    None => "-".to_owned(),
-                })
-                .collect();
-            out.push_str(&format!("     deciles: [{}]\n", deciles.join(", ")));
         }
     }
     out.trim_end().to_owned()

@@ -456,13 +456,9 @@ fn stats_reports_variables_and_coverage() {
         "stdout: {stdout}"
     );
     assert!(stdout.contains("energy: n=3,"), "stdout: {stdout}");
-    assert!(stdout.contains("pearson"), "stdout: {stdout}");
-    assert!(stdout.contains("deciles"), "stdout: {stdout}");
-    // the sampling points themselves are reported too, alongside the
-    // result variables
+    // the default is the compact tier: global metrics, the decile and
+    // pair summaries, and one line per result variable
     assert!(stdout.contains("sampling points:"), "stdout: {stdout}");
-    assert!(stdout.contains("x vs y: pearson "), "stdout: {stdout}");
-    assert!(stdout.contains("outer deciles: "), "stdout: {stdout}");
     assert!(
         stdout.contains("min pairwise distance: "),
         "stdout: {stdout}"
@@ -472,6 +468,51 @@ fn stats_reports_variables_and_coverage() {
         "stdout: {stdout}"
     );
     assert!(stdout.contains("discrepancy (CL2): "), "stdout: {stdout}");
+    assert!(stdout.contains("pooled pair r2: "), "stdout: {stdout}");
+    assert!(stdout.contains("empty decile slots: "), "stdout: {stdout}");
+    assert!(
+        stdout.contains("pairs: 1, max |pearson| "),
+        "stdout: {stdout}"
+    );
+    // the detail blocks are behind --verbose
+    assert!(!stdout.contains("x vs y: pearson "), "stdout: {stdout}");
+    assert!(!stdout.contains("decile counts:"), "stdout: {stdout}");
+    assert!(!stdout.contains("outer deciles: "), "stdout: {stdout}");
+    assert!(!stdout.contains("in scope:"), "stdout: {stdout}");
+
+    // read-only: the input file is untouched
+    assert_eq!(fs::read_to_string(&file).unwrap(), fixture());
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn stats_verbose_reports_the_full_details() {
+    let dir = temp_dir("stats-verbose");
+    let file = dir.join("designs.json");
+    fs::write(&file, fixture()).unwrap();
+
+    // --verbose switches to the full tier: per-parameter descriptive
+    // statistics and decile counts, the pair list, and the
+    // per-parameter blocks of the result variables
+    let (out, stdout) = run(&dir, &["stats", "--verbose", "designs.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("pool: 30 designs, 3 evaluated, 2 parameters (15 designs per parameter)"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("x: n=30, min "), "stdout: {stdout}");
+    assert!(stdout.contains("y: n=30, min "), "stdout: {stdout}");
+    assert!(stdout.contains("decile counts: ["), "stdout: {stdout}");
+    assert!(stdout.contains("outer deciles: "), "stdout: {stdout}");
+    assert!(stdout.contains("x vs y: pearson "), "stdout: {stdout}");
+    assert!(stdout.contains("empty decile slots: "), "stdout: {stdout}");
+    assert!(stdout.contains("in scope: "), "stdout: {stdout}");
+    assert!(stdout.contains("outside scope: "), "stdout: {stdout}");
+    assert!(stdout.contains("energy: n=3,"), "stdout: {stdout}");
 
     // read-only: the input file is untouched
     assert_eq!(fs::read_to_string(&file).unwrap(), fixture());
@@ -488,7 +529,8 @@ fn stats_without_results_reports_sampling_points() {
     fs::write(&file, &content).unwrap();
 
     // designs exist, nothing is evaluated: the sampling points themselves
-    // are analyzed instead of erroring out
+    // are analyzed instead of erroring out — the default compact tier
+    // reports the global metrics and summaries only
     let (out, stdout) = run(&dir, &["stats", "designs.json"]);
     assert!(
         out.status.success(),
@@ -500,10 +542,6 @@ fn stats_without_results_reports_sampling_points() {
         "stdout: {stdout}"
     );
     assert!(stdout.contains("sampling points:"), "stdout: {stdout}");
-    assert!(stdout.contains("x: n=30, min "), "stdout: {stdout}");
-    assert!(stdout.contains("y: n=30, min "), "stdout: {stdout}");
-    assert!(stdout.contains("decile counts: ["), "stdout: {stdout}");
-    assert!(stdout.contains("outer deciles: "), "stdout: {stdout}");
     assert!(
         stdout.contains("min pairwise distance: "),
         "stdout: {stdout}"
@@ -522,7 +560,15 @@ fn stats_without_results_reports_sampling_points() {
     );
     assert!(stdout.contains("discrepancy (CL2): "), "stdout: {stdout}");
     assert!(stdout.contains("pooled pair r2: "), "stdout: {stdout}");
-    assert!(stdout.contains("x vs y: pearson "), "stdout: {stdout}");
+    assert!(stdout.contains("empty decile slots: "), "stdout: {stdout}");
+    assert!(
+        stdout.contains("pairs: 1, max |pearson| "),
+        "stdout: {stdout}"
+    );
+    // the per-parameter and pair details are behind --verbose
+    assert!(!stdout.contains("x: n=30, min "), "stdout: {stdout}");
+    assert!(!stdout.contains("decile counts: ["), "stdout: {stdout}");
+    assert!(!stdout.contains("x vs y: pearson "), "stdout: {stdout}");
     // no result variable exists, so none is reported
     assert!(!stdout.contains("energy"), "stdout: {stdout}");
 
@@ -576,6 +622,17 @@ fn stats_single_design_reports_na_distances() {
     );
     assert!(
         stdout.contains("discrepancy (CL2): 0.288675"),
+        "stdout: {stdout}"
+    );
+    // a single design cannot correlate with itself: no pair, no
+    // maximum; 9 of the 10 decile slots of the single parameter stay
+    // empty
+    assert!(
+        stdout.contains("empty decile slots: 9 of 10"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("pairs: 0, max |pearson| n/a, max |spearman| n/a"),
         "stdout: {stdout}"
     );
     // a single design cannot correlate with itself
@@ -733,7 +790,7 @@ fn stats_ignores_non_numeric_result_fields() {
 }
 
 #[test]
-fn stats_json_reports_the_full_pool_analysis() {
+fn stats_json_reports_the_compact_pool_analysis() {
     let dir = temp_dir("stats-json");
     let file = dir.join("designs.json");
     fs::write(&file, fixture()).unwrap();
@@ -750,6 +807,60 @@ fn stats_json_reports_the_full_pool_analysis() {
     assert_eq!(v["subcommand"], "stats");
     assert_eq!(v["file"], "designs.json");
     assert_eq!(v["evaluated"], 3);
+    // the default JSON is the compact tier: global metrics and the
+    // summary fields, no per-parameter or pair detail
+    let pool = &v["pool"];
+    assert_eq!(pool["total"], 30);
+    assert!(pool["min_pairwise_distance"].is_number());
+    assert!(pool["mean_pairwise_distance"].is_number());
+    assert!(pool["median_pairwise_distance"].is_number());
+    assert!(pool["mean_nearest_neighbor"].is_number());
+    assert!(pool["discrepancy_cl2"].is_number());
+    assert!(pool["pooled_pair_r2"].is_number());
+    assert!(pool["empty_decile_slots"].is_u64());
+    assert!(pool["max_abs_pearson"].is_number());
+    assert!(pool["max_abs_spearman"].is_number());
+    assert_eq!(pool["n_pairs"], 1);
+    assert!(
+        pool.get("parameters").is_none(),
+        "compact pool must not carry the parameters array"
+    );
+    assert!(
+        pool.get("pairs").is_none(),
+        "compact pool must not carry the pairs array"
+    );
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["name"], "energy");
+    assert_eq!(results[0]["n"], 3);
+    assert_eq!(results[0]["total"], 30);
+    assert!(
+        results[0].get("parameters").is_none(),
+        "compact results must not carry per-parameter blocks"
+    );
+
+    // read-only: the input file is untouched
+    assert_eq!(fs::read_to_string(&file).unwrap(), fixture());
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn stats_json_verbose_reports_the_full_analysis() {
+    let dir = temp_dir("stats-json-verbose");
+    let file = dir.join("designs.json");
+    fs::write(&file, fixture()).unwrap();
+
+    // --json --verbose returns the full object: the parameters and
+    // pairs arrays and the per-parameter result blocks are back
+    let (out, stdout) = run(&dir, &["stats", "--json", "--verbose", "designs.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(stdout.lines().count(), 1, "stdout: {stdout}");
+    let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
+    assert_eq!(v["subcommand"], "stats");
     let pool = &v["pool"];
     assert_eq!(pool["total"], 30);
     let params = pool["parameters"].as_array().unwrap();
@@ -759,11 +870,8 @@ fn stats_json_reports_the_full_pool_analysis() {
     assert_eq!(params[0]["deciles"].as_array().unwrap().len(), 10);
     assert!(params[0]["outer_deciles"].as_u64().is_some());
     assert!(pool["min_pairwise_distance"].is_number());
-    assert!(pool["mean_pairwise_distance"].is_number());
-    assert!(pool["median_pairwise_distance"].is_number());
-    assert!(pool["mean_nearest_neighbor"].is_number());
-    assert!(pool["discrepancy_cl2"].is_number());
-    assert!(pool["pooled_pair_r2"].is_number());
+    assert!(pool["empty_decile_slots"].is_u64());
+    assert!(pool["max_abs_pearson"].is_number());
     let pairs = pool["pairs"].as_array().unwrap();
     assert_eq!(pairs.len(), 1);
     assert_eq!(pairs[0]["a"], "x");
@@ -773,7 +881,6 @@ fn stats_json_reports_the_full_pool_analysis() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0]["name"], "energy");
     assert_eq!(results[0]["n"], 3);
-    assert_eq!(results[0]["total"], 30);
     assert_eq!(results[0]["parameters"].as_array().unwrap().len(), 2);
 
     // read-only: the input file is untouched

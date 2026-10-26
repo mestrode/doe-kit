@@ -108,7 +108,11 @@ When the pass ran, `polish_moves`, `polish_score_before` and
 post-polish score). The
 `stats` object carries
 `subcommand`, `file`, `evaluated`, `pool` and `results`, mirroring the
-human report's numbers. This flag is the output convention for every
+human report's numbers. Both commands follow the same tiering as their
+human output: `stats --json` prints the compact object (the pool
+without its per-parameter entries and pair list, carrying `n_pairs`
+instead; each result without its per-parameter entries), `stats --json
+--verbose` the full one. This flag is the output convention for every
 future sampling-method subcommand, so benchmark runs can be collected
 line by line into one file.
 
@@ -119,12 +123,43 @@ sampling stats designs.json
 ```
 
 Read-only statistical analysis of the pool (nothing is written, the input
-file is untouched). Two blocks are reported:
+file is untouched). The report has two tiers: the default is compact —
+the pool line, the global sampling metrics, an occupancy and a pair
+summary, and one line per result variable; `--verbose` adds the
+per-parameter detail and the complete pair list.
 
 Statistics of the sampling points themselves (the `designs`, independent
 of any evaluation — this is what to look at right after `plhs` generated
 new designs). The pool line opens the report with the total, the
 evaluated count and the context number of designs per parameter:
+
+1. Space-filling metrics over all designs in the unit cube (every
+   parameter linearly scaled to [0, 1] of its definition range, so
+   mixed units stay comparable): the minimal pairwise distance (near
+   zero means near-duplicate parameter sets), the mean and median
+   pairwise distance (the typical spread; the median is robust against
+   a few extreme outliers) and the mean nearest-neighbor distance
+   (clumping); all n/a for a single design.
+2. The centered L2 discrepancy (CL2, Hickernell) in the same normalized
+   space: a single uniformity number for the whole pool, comparable
+   between candidate pools — run `--explore` with a different `--seed`
+   and compare; lower is better.
+3. The pooled pair r2: the sum of squared Pearson correlations over
+   all parameter pairs — the score `plhs` optimizes and reports as
+   `score S`, readable back on the pool (identical on pools without
+   scopes; `plhs` scores the in-scope series). Pairs with an undefined
+   correlation count as 0, as in the plhs scoring; n/a when no pair
+   correlation is defined at all.
+4. Empty decile slots: how many of the per-parameter decile bins
+   (10 equal-width bins per parameter definition range) hold no
+   sampling point; zero means every section of every range is
+   populated.
+5. The pair summary: the number of parameter pairs and the maximum
+   absolute Pearson and Spearman correlation over all pairs (n/a below
+   3 designs or without variance) — one line telling whether any
+   parameter pair moves together.
+
+`--verbose` adds the detail behind those summaries:
 
 1. Per parameter: descriptive statistics of the design values (n, min,
    max, mean, median, sample std).
@@ -132,39 +167,23 @@ evaluated count and the context number of designs per parameter:
    of the definition range — how uniformly the range is covered — plus
    the outer deciles (points in the first + last decile), telling
    whether the range edges are populated.
-3. Space-filling metrics over all designs in the unit cube (every
-   parameter linearly scaled to [0, 1] of its definition range, so
-   mixed units stay comparable): the minimal pairwise distance (near
-   zero means near-duplicate parameter sets), the mean and median
-   pairwise distance (the typical spread; the median is robust against
-   a few extreme outliers) and the mean nearest-neighbor distance
-   (clumping); all n/a for a single design.
-4. The centered L2 discrepancy (CL2, Hickernell) in the same normalized
-   space: a single uniformity number for the whole pool, comparable
-   between candidate pools — run `--explore` with a different `--seed`
-   and compare; lower is better.
-5. The pooled pair r2: the sum of squared Pearson correlations over
-   all parameter pairs — the score `plhs` optimizes and reports as
-   `score S`, readable back on the pool (identical on pools without
-   scopes; `plhs` scores the in-scope series). Pairs with an undefined
-   correlation count as 0, as in the plhs scoring; n/a when no pair
-   correlation is defined at all.
-6. Per parameter pair: Pearson and Spearman correlation between the
+3. Per parameter pair: Pearson and Spearman correlation between the
    parameter values (n/a below 3 designs or without variance).
 
 Statistics of the evaluated `results` (reported only when `results`
 exist). Per numeric result variable (any numeric field on a result
-entry, e.g. `energy`):
+entry, e.g. `energy`), the compact tier prints one summary line:
+coverage (how many of the pool's designs are evaluated) and the
+descriptive statistics n, min, max, mean, median, sample std.
+`--verbose` adds, per parameter:
 
-1. Coverage: how many of the pool's designs are evaluated.
-2. Descriptive statistics: n, min, max, mean, median, sample std.
-3. Per parameter: Pearson and Spearman correlation between the parameter
-   value and the result (n/a below 3 evaluated designs or without
-   variance — Spearman catches monotonic-but-nonlinear trends).
-4. Per parameter: result mean/std inside the current scope vs outside it
-   (printed only when evaluated designs exist outside the scope).
-5. Per parameter: result mean per decile (10 equal-width bins) of the
-   definition range.
+1. Pearson and Spearman correlation between the parameter value and the
+   result (n/a below 3 evaluated designs or without variance —
+   Spearman catches monotonic-but-nonlinear trends).
+2. The result mean/std inside the current scope vs outside it (printed
+   only when evaluated designs exist outside the scope).
+3. The result mean per decile (10 equal-width bins) of the definition
+   range.
 
 A pool without `results` is no longer an error: the sampling points are
 analyzed on their own, so `init` followed by `plhs` and `stats` reports
