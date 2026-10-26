@@ -1,13 +1,19 @@
 {
   "params": [
     {
-      "name": "param_uniform",
+      "name": "a",
       "min": 0,
       "max": 10,
       "distribution": "uniform"
     },
     {
-      "name": "param_gaussian",
+      "name": "b",
+      "min": 0,
+      "max": 10,
+      "distribution": "uniform"
+    },
+    {
+      "name": "c",
       "min": 0,
       "max": 10,
       "mean": 5,
