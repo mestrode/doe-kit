@@ -22,14 +22,14 @@ Currently available subcommands:
 sampling init designs.json
 ```
 
-Writes a skeleton pool with three example parameters — `a` and `b`
-uniform over `[0, 10]`, `c` gaussian over `[0, 10]` with mean 5 and
-sigma 2 (the input names of the analytic example simulators) — and an
-empty `designs` list. Edit `params` by hand, then run `plhs` or `stats`
-on the file. The skeleton sets no `scope` (the full parameter ranges
-apply) and no `results` (nothing is evaluated yet), so it is
-immediately valid. `init` refuses to overwrite an existing file
-(validation error, exit 1); there is no `--force`.
+Writes a skeleton pool with three example parameters — `a` uniform over
+`[0, 10]`, `b` uniform over `[-1, 1]`, `c` gaussian over `[0, 5]` with
+mean 2.5 and sigma 1 (the input names of the analytic example
+simulators) — and an empty `designs` list. Edit `params` by hand, then
+run `plhs` or `stats` on the file. The skeleton sets no `scope` (the
+full parameter ranges apply) and no `results` (nothing is evaluated
+yet), so it is immediately valid. `init` refuses to overwrite an
+existing file (validation error, exit 1); there is no `--force`.
 
 ## Usage
 

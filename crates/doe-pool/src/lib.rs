@@ -23,12 +23,12 @@ use serde_json::Value;
 pub use error::{Error, Result};
 
 /// Returns the example pool written by `sampling init`: exactly three
-/// example parameters — `a` and `b` uniform over `[0, 10]`, `c` gaussian
-/// over `[0, 10]` with mean 5 and sigma 2 (the inputs of the analytic
-/// example simulators) — an empty `designs` list, no `scope` (defaults
-/// to the full parameter ranges) and no `results` (none evaluated yet).
-/// The output is immediately parseable so the other subcommands run on
-/// it once the user edits `params`.
+/// example parameters — `a` uniform over `[0, 10]`, `b` uniform over
+/// `[-1, 1]`, `c` gaussian over `[0, 5]` with mean 2.5 and sigma 1
+/// (the inputs of the analytic example simulators) — an empty `designs`
+/// list, no `scope` (defaults to the full parameter ranges) and no
+/// `results` (none evaluated yet). The output is immediately parseable
+/// so the other subcommands run on it once the user edits `params`.
 pub fn skeleton() -> Value {
     serde_json::json!({
         "params": [
@@ -40,16 +40,16 @@ pub fn skeleton() -> Value {
             },
             {
                 "name": "b",
-                "min": 0,
-                "max": 10,
+                "min": -1,
+                "max": 1,
                 "distribution": "uniform"
             },
             {
                 "name": "c",
                 "min": 0,
-                "max": 10,
-                "mean": 5,
-                "sigma": 2,
+                "max": 5,
+                "mean": 2.5,
+                "sigma": 1,
                 "distribution": "gaussian"
             }
         ],
@@ -115,17 +115,17 @@ mod tests {
         assert_eq!(params[0].max, 10.0);
         assert_eq!(params[0].distribution, doe_types::Distribution::Uniform);
         assert_eq!(params[1].name, "b");
-        assert_eq!(params[1].min, 0.0);
-        assert_eq!(params[1].max, 10.0);
+        assert_eq!(params[1].min, -1.0);
+        assert_eq!(params[1].max, 1.0);
         assert_eq!(params[1].distribution, doe_types::Distribution::Uniform);
         assert_eq!(params[2].name, "c");
         assert_eq!(params[2].min, 0.0);
-        assert_eq!(params[2].max, 10.0);
+        assert_eq!(params[2].max, 5.0);
         assert_eq!(
             params[2].distribution,
             doe_types::Distribution::Gaussian {
-                mean: 5.0,
-                sigma: 2.0
+                mean: 2.5,
+                sigma: 1.0
             }
         );
         assert!(root.get("scope").is_none(), "no scope: full range");
