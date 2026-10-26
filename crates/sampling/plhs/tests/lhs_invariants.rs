@@ -32,7 +32,7 @@ fn new_designs_use_distinct_empty_bins_per_parameter() {
     let params = params();
     let designs = designs();
     let m = 3;
-    let aug = augment(&params, &designs, m, 123, 1_000_000).unwrap();
+    let aug = augment(&params, &designs, m, 123, 1_000_000, false).unwrap();
     assert_eq!(aug.new_designs.len(), m);
 
     for (j, param) in params.iter().enumerate() {
@@ -76,12 +76,12 @@ fn new_designs_use_distinct_empty_bins_per_parameter() {
 fn same_seed_same_result_different_seed_different_result() {
     let params = params();
     let designs = designs();
-    let a = augment(&params, &designs, 2, 7, 1_000_000).unwrap();
-    let b = augment(&params, &designs, 2, 7, 1_000_000).unwrap();
+    let a = augment(&params, &designs, 2, 7, 1_000_000, false).unwrap();
+    let b = augment(&params, &designs, 2, 7, 1_000_000, false).unwrap();
     assert_eq!(a.new_designs, b.new_designs);
     assert_eq!(a.score, b.score);
 
-    let c = augment(&params, &designs, 2, 8, 1_000_000).unwrap();
+    let c = augment(&params, &designs, 2, 8, 1_000_000, false).unwrap();
     let differs = a
         .new_designs
         .iter()
@@ -94,11 +94,11 @@ fn same_seed_same_result_different_seed_different_result() {
 fn iteration_increments_across_runs() {
     let params = params();
     let mut designs = designs();
-    let first = augment(&params, &designs, 2, 42, 1_000_000).unwrap();
+    let first = augment(&params, &designs, 2, 42, 1_000_000, false).unwrap();
     assert_eq!(first.iteration, 1);
     designs.extend(first.new_designs.clone());
 
-    let second = augment(&params, &designs, 2, 42, 1_000_000).unwrap();
+    let second = augment(&params, &designs, 2, 42, 1_000_000, false).unwrap();
     assert_eq!(second.iteration, 2);
     for design in &second.new_designs {
         let fresh = !designs.iter().any(|d| d.name == design.name);
@@ -113,7 +113,7 @@ fn score_of_chosen_assignment_beats_a_naive_one() {
     // (i.e. selection actually optimized something)
     let params = params();
     let designs = designs();
-    let aug = augment(&params, &designs, 2, 99, 1_000_000).unwrap();
+    let aug = augment(&params, &designs, 2, 99, 1_000_000, false).unwrap();
     assert!(aug.score <= 1.0, "score unreasonably high: {}", aug.score);
 }
 
@@ -124,7 +124,7 @@ fn explore_counts_out_of_scope_designs_in_the_pool() {
     let params = params();
     let designs = designs();
     let m = 3;
-    let aug = explore(&params, &designs, m, 123, 1_000_000).unwrap();
+    let aug = explore(&params, &designs, m, 123, 1_000_000, false).unwrap();
     assert_eq!(aug.new_designs.len(), m);
 
     let full: Vec<Parameter> = params.iter().map(|p| p.full_surface()).collect();
@@ -195,7 +195,7 @@ fn explore_reaches_where_the_scoped_augment_cannot() {
         })
         .collect();
 
-    let exp = explore(&params, &designs, 2, 11, 1_000_000).unwrap();
+    let exp = explore(&params, &designs, 2, 11, 1_000_000, false).unwrap();
     // the whole [0, 8) stretch of x is empty in explore mode (the 10 bins
     // over [0, 10] are occupied only in 8 and 9), so both new x values lie
     // outside the old x scope [8, 10] — unreachable for the scoped augment

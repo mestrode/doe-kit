@@ -286,6 +286,11 @@ fn plhs_json_emits_one_machine_readable_line() {
     // only a handful of assignments are possible on the fixture: the
     // exact enumeration ran
     assert_eq!(v["strategy"], "exact");
+    // a single-chunk exact run is jointly optimal over the polish swap
+    // space: the pass is skipped and reports as much
+    assert_eq!(v["polished"], false);
+    assert!(v.get("polish_moves").is_none());
+    assert!(v.get("polish_score_before").is_none());
     assert!(v["score"].as_f64().unwrap() >= 0.0);
     assert!(v["elapsed_ms"].as_u64().is_some(), "elapsed_ms in {stdout}");
     // the pool is written and backed up exactly as without --json
@@ -313,6 +318,14 @@ fn plhs_json_reports_greedy_with_cap_zero() {
     let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
     assert_eq!(v["cap"], 0);
     assert_eq!(v["strategy"], "greedy");
+    // a greedy run is polished by default and reports what the pass did
+    assert_eq!(v["polished"], true);
+    assert!(
+        v["polish_moves"].as_u64().is_some(),
+        "polish_moves in {stdout}"
+    );
+    assert!(v["polish_score_before"].as_f64().is_some());
+    assert!(v["polish_score_after"].as_f64().is_some());
     assert!(v["score"].as_f64().unwrap() >= 0.0);
     assert!(v["elapsed_ms"].as_u64().is_some(), "elapsed_ms in {stdout}");
     fs::remove_dir_all(&dir).ok();
@@ -331,6 +344,98 @@ fn plhs_json_keeps_validation_errors_human() {
     assert!(stdout.is_empty(), "stdout on error: {stdout}");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("error"), "stderr: {stderr}");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn polish_refines_the_first_exploration_and_reports_itself() {
+    let dir = temp_dir("polish");
+
+    // a fresh pool, first exploration: the greedy chunk on an empty
+    // pool drifts, and the quality stage is the polish pass
+    let (out, _) = run(&dir, &["init", "pool.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let (out, stdout) = run(&dir, &["plhs", "--explore", "10", "--json", "pool.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
+    assert_eq!(v["strategy"], "greedy");
+    assert_eq!(v["polished"], true);
+    let moves = v["polish_moves"].as_u64().expect("polish_moves");
+    assert!(
+        moves > 0,
+        "the drifted assignment must have improving swaps: {stdout}"
+    );
+    let before = v["polish_score_before"].as_f64().unwrap();
+    let after = v["polish_score_after"].as_f64().unwrap();
+    assert!(after < before, "polish must improve: {before} -> {after}");
+    assert_eq!(v["score"].as_f64().unwrap(), after);
+
+    // the human summary reports the pass too; a second fresh pool, so
+    // the wording is checked independently of the pool state
+    let (out, _) = run(&dir, &["init", "plain.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let (out, stdout) = run(&dir, &["plhs", "--explore", "10", "plain.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains(&format!(", polished with {moves} swap(s) (was ")),
+        "unexpected summary: {stdout}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn no_polish_flag_disables_the_pass() {
+    let dir = temp_dir("no-polish");
+
+    let (out, _) = run(&dir, &["init", "pool.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let (out, stdout) = run(
+        &dir,
+        &[
+            "plhs",
+            "--explore",
+            "10",
+            "--no-polish",
+            "--json",
+            "pool.json",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
+    assert_eq!(v["strategy"], "greedy");
+    assert_eq!(v["polished"], false);
+    assert!(v.get("polish_moves").is_none());
+    assert!(v.get("polish_score_before").is_none());
+    assert!(v.get("polish_score_after").is_none());
+    // the run still writes the pool and backs it up
+    assert!(dir.join("pool.json.bak").exists());
+    let root: Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("pool.json")).unwrap()).unwrap();
+    assert_eq!(root["designs"].as_array().unwrap().len(), 10);
     fs::remove_dir_all(&dir).ok();
 }
 

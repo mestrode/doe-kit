@@ -49,6 +49,7 @@ Options:
 | `--output FILE` | output file, default: the input file |
 | `--no-backup` | skip writing the backup file |
 | `--cap N` | exact-enumeration cap, default 1000000; above it, greedy sequential selection is used |
+| `--no-polish` | skip the post-placement refinement pass (swap descent) that runs after the selection on greedy, mixed and batched runs |
 | `--json` | print one line of machine-readable JSON instead of the human summary (benchmark and result collection) |
 
 The input file is read, `N` new designs are appended to `designs`,
@@ -67,6 +68,18 @@ Large runs are placed in chunks automatically: `--explore 500` on a
 the standard-LHS loop — there), writing one backup, one iteration and one
 `--json` line. The pool keeps the Latin Hypercube property of one design
 per bin per parameter.
+
+Because chunks (and greedy steps) are optimized one at a time, the
+finished assignment is refined afterwards by a deterministic polish pass:
+a greedy swap descent that exchanges the values of two new designs
+within one parameter, which cannot break the Latin Hypercube property.
+It runs on every greedy, mixed and batched run — including batched
+runs of exact chunks, which are per-chunk optimal but never jointly —
+and is skipped only for single-chunk exact runs, which it provably
+cannot improve (the exact enumeration already searched the same
+assignment space). The pass stops at convergence (a sweep without an
+improving swap) or after a bounded evaluation budget. The human summary
+appends `, polished with N swap(s) (was S)` when swaps were applied.
 
 Exit codes: `0` success, `1` validation error, `2` I/O error (missing
 subcommand or unknown subcommand: usage error).
@@ -87,8 +100,12 @@ The `plhs` object carries `subcommand`, `mode` (`add`/`explore`), `file`,
 `seed`, `cap`, `m`, `designs_before`, `designs_after`, `iteration`,
 `n_params`, `strategy` (`exact`/`greedy`, or `mixed` when a batched run's
 chunks used different strategies), `chunks` (how many chunks the `m` new
-designs were placed in, 1 for a single-shot run), `score` and `elapsed_ms`
-(the compute phase only: after reading the pool, before writing it). The
+designs were placed in, 1 for a single-shot run), `polished` (whether the
+post-placement refinement pass ran), `score` and `elapsed_ms`
+(the compute phase only: after reading the pool, before writing it).
+When the pass ran, `polish_moves`, `polish_score_before` and
+`polish_score_after` report what it did (`score` is always the
+post-polish score). The
 `stats` object carries
 `subcommand`, `file`, `evaluated`, `pool` and `results`, mirroring the
 human report's numbers. This flag is the output convention for every

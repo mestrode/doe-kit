@@ -18,22 +18,22 @@
   "designs": [
     {
       "name": "1.1",
-      "param_uniform": 0.3482544685480762,
+      "param_uniform": 9.798137430393188,
       "param_gaussian": 0.5947044293957771
     },
     {
       "name": "1.2",
-      "param_uniform": 1.285698571262962,
+      "param_uniform": 8.466710679520391,
       "param_gaussian": 4.502908153912676
     },
     {
       "name": "1.3",
-      "param_uniform": 4.825678171959705,
+      "param_uniform": 5.067269717361354,
       "param_gaussian": 1.8266388582885429
     },
     {
       "name": "1.4",
-      "param_uniform": 9.798137430393188,
+      "param_uniform": 1.285698571262962,
       "param_gaussian": 2.3220257002579348
     },
     {
@@ -43,7 +43,7 @@
     },
     {
       "name": "1.6",
-      "param_uniform": 5.067269717361354,
+      "param_uniform": 0.3482544685480762,
       "param_gaussian": 5.145037456243365
     },
     {
@@ -53,7 +53,7 @@
     },
     {
       "name": "1.8",
-      "param_uniform": 6.489996598140122,
+      "param_uniform": 4.825678171959705,
       "param_gaussian": 7.193402469881302
     },
     {
@@ -63,29 +63,29 @@
     },
     {
       "name": "1.10",
-      "param_uniform": 8.466710679520391,
+      "param_uniform": 6.489996598140122,
       "param_gaussian": 9.71694982362827
     }
   ],
   "new_designs": [
     {
       "name": "1.1",
-      "param_uniform": 0.3482544685480762,
+      "param_uniform": 9.798137430393188,
       "param_gaussian": 0.5947044293957771
     },
     {
       "name": "1.2",
-      "param_uniform": 1.285698571262962,
+      "param_uniform": 8.466710679520391,
       "param_gaussian": 4.502908153912676
     },
     {
       "name": "1.3",
-      "param_uniform": 4.825678171959705,
+      "param_uniform": 5.067269717361354,
       "param_gaussian": 1.8266388582885429
     },
     {
       "name": "1.4",
-      "param_uniform": 9.798137430393188,
+      "param_uniform": 1.285698571262962,
       "param_gaussian": 2.3220257002579348
     },
     {
@@ -95,7 +95,7 @@
     },
     {
       "name": "1.6",
-      "param_uniform": 5.067269717361354,
+      "param_uniform": 0.3482544685480762,
       "param_gaussian": 5.145037456243365
     },
     {
@@ -105,7 +105,7 @@
     },
     {
       "name": "1.8",
-      "param_uniform": 6.489996598140122,
+      "param_uniform": 4.825678171959705,
       "param_gaussian": 7.193402469881302
     },
     {
@@ -115,7 +115,7 @@
     },
     {
       "name": "1.10",
-      "param_uniform": 8.466710679520391,
+      "param_uniform": 6.489996598140122,
       "param_gaussian": 9.71694982362827
     }
   ]
