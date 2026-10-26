@@ -63,6 +63,10 @@ cadence; publication to crates.io is manual and per crate.
 - `--json` on a subcommand means one machine-readable line on stdout,
   human output suppressed, errors still human on stderr. Every
   sampling-method subcommand gets this flag.
+- `--verbose` on a subcommand switches the output to the full detail
+  tier; the default output is compact. Subcommands with detail depth
+  get this flag, and `--json` follows the same tiering: the default is
+  the compact object, `--json --verbose` the full one.
 - Input files are backed up to `<file>.bak` unless `--no-backup` is given.
 - Pool files are read, parsed and written through the `doe-pool` crate; do
   not reimplement pool file handling in another crate or binary.

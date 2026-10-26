@@ -139,6 +139,19 @@ pub struct PoolStats {
     /// pair correlation is defined at all (fewer than 3 designs, a
     /// single parameter, or no variance in any pair).
     pub pooled_pair_r2: Option<f64>,
+    /// Empty decile slots summed over all parameters: how many of the
+    /// `10 * parameters` decile bins of the definition ranges carry no
+    /// sampling point at all. Zero means every decile of every
+    /// parameter is populated.
+    pub empty_decile_slots: usize,
+    /// Largest absolute Pearson correlation over all parameter pairs;
+    /// `None` when no pair correlation is defined (same conditions as
+    /// [`Self::pooled_pair_r2`]). The compact summary of the pair
+    /// list.
+    pub max_abs_pearson: Option<f64>,
+    /// Largest absolute Spearman rank correlation over all parameter
+    /// pairs; `None` when no pair correlation is defined.
+    pub max_abs_spearman: Option<f64>,
 }
 
 /// Descriptive statistics of one parameter's sampling points.
@@ -311,16 +324,35 @@ pub fn analyze_pool(params: &[Parameter], designs: &[Design]) -> Result<PoolStat
 
     // the plhs score, read back on the pool: sum of squared Pearson
     // correlations over all pairs; undefined pairs contribute 0.0 (the
-    // plhs convention), and the line is n/a when no pair is defined
+    // plhs convention), and the line is n/a when no pair is defined.
+    // The same pass collects the compact pair summary: the maximum
+    // absolute correlation of each kind.
     let mut pooled_pair_r2 = 0.0;
-    let mut any_pair_defined = false;
+    let mut max_abs_pearson = 0.0_f64;
+    let mut max_abs_spearman = 0.0_f64;
+    let mut any_pearson = false;
+    let mut any_spearman = false;
     for pair in &pairs {
         if let Some(r) = pair.pearson {
             pooled_pair_r2 += r * r;
-            any_pair_defined = true;
+            max_abs_pearson = max_abs_pearson.max(r.abs());
+            any_pearson = true;
+        }
+        if let Some(s) = pair.spearman {
+            max_abs_spearman = max_abs_spearman.max(s.abs());
+            any_spearman = true;
         }
     }
-    let pooled_pair_r2 = any_pair_defined.then_some(pooled_pair_r2);
+    let pooled_pair_r2 = any_pearson.then_some(pooled_pair_r2);
+    let max_abs_pearson = any_pearson.then_some(max_abs_pearson);
+    let max_abs_spearman = any_spearman.then_some(max_abs_spearman);
+
+    // empty decile slots over all parameters: the compact occupancy
+    // summary of the per-parameter decile counts
+    let empty_decile_slots: usize = parameters
+        .iter()
+        .map(|p| p.deciles.iter().filter(|&&c| c == 0).count())
+        .sum();
 
     Ok(PoolStats {
         total: designs.len(),
@@ -332,6 +364,9 @@ pub fn analyze_pool(params: &[Parameter], designs: &[Design]) -> Result<PoolStat
         discrepancy_cl2,
         pairs,
         pooled_pair_r2,
+        empty_decile_slots,
+        max_abs_pearson,
+        max_abs_spearman,
     })
 }
 
@@ -1109,6 +1144,135 @@ mod tests {
             .collect();
         let pool = analyze_pool(&params, &designs).unwrap();
         assert_eq!(pool.pooled_pair_r2, None);
+    }
+
+    #[test]
+    fn empty_decile_slots_sum_over_all_parameters() {
+        let params = vec![param("x", 0.0, 10.0), param("y", 0.0, 10.0)];
+        // x lands in deciles 1, 2 and 3 (7 of 10 empty); y always in
+        // decile 9 (9 of 10 empty) — 16 of the 20 slots are empty
+        let designs: Vec<Design> = [(1.0, 9.0), (2.0, 9.0), (3.0, 9.0)]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (x, y))| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![x, y],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &designs).unwrap();
+        assert_eq!(
+            pool.parameters[0]
+                .deciles
+                .iter()
+                .filter(|&&c| c == 0)
+                .count(),
+            7
+        );
+        assert_eq!(
+            pool.parameters[1]
+                .deciles
+                .iter()
+                .filter(|&&c| c == 0)
+                .count(),
+            9
+        );
+        assert_eq!(pool.empty_decile_slots, 16);
+    }
+
+    #[test]
+    fn max_abs_correlations_are_hand_computed() {
+        let params = vec![param("a", 0.0, 10.0), param("b", 0.0, 10.0)];
+        // the single pair has r = pearson of ([1,2,3], [1,1,2]):
+        // cov = 1/3, var = 2/3 and 2/9 -> r = sqrt(3)/2
+        let designs: Vec<Design> = [(1.0, 1.0), (2.0, 1.0), (3.0, 2.0)]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (a, b))| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![a, b],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &designs).unwrap();
+        let expected = (3.0_f64).sqrt() / 2.0;
+        assert!((pool.max_abs_pearson.unwrap() - expected).abs() < 1e-12);
+        // spearman of the ranks ([1,2,3] vs [1.5,1.5,3]) is sqrt(3)/2 too
+        assert!((pool.max_abs_spearman.unwrap() - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn max_abs_correlations_take_the_maximum_over_all_pairs() {
+        let params = vec![
+            param("a", 0.0, 10.0),
+            param("c", 0.0, 10.0),
+            param("b", 0.0, 10.0),
+        ];
+        // pairs: (a, c) has r = sqrt(3)/2, (a, b) is perfect, (c, b)
+        // follows (a, c) — the maximum sits in the middle pair
+        let designs: Vec<Design> = [(1.0, 1.0), (2.0, 1.0), (3.0, 2.0)]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (a, c))| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![a, c, 2.0 * a],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &designs).unwrap();
+        let expected = (3.0_f64).sqrt() / 2.0;
+        assert!((pool.pairs[0].pearson.unwrap() - expected).abs() < 1e-12);
+        assert!((pool.pairs[1].pearson.unwrap() - 1.0).abs() < 1e-12);
+        assert!((pool.max_abs_pearson.unwrap() - 1.0).abs() < 1e-12);
+        assert!((pool.max_abs_spearman.unwrap() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn max_abs_correlations_are_none_when_no_pair_is_defined() {
+        // a single parameter: there is no pair at all
+        let params = vec![param("x", 0.0, 10.0)];
+        let designs: Vec<Design> = [1.0, 2.0, 3.0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, x)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![x],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &designs).unwrap();
+        assert_eq!(pool.max_abs_pearson, None);
+        assert_eq!(pool.max_abs_spearman, None);
+
+        // a flat parameter and its only partner: the single pair is
+        // undefined, so no maximum exists
+        let params = vec![param("x", 0.0, 10.0), param("y", 0.0, 10.0)];
+        let designs: Vec<Design> = [1.0, 2.0, 3.0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, y)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![5.0, y],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &designs).unwrap();
+        assert_eq!(pool.max_abs_pearson, None);
+        assert_eq!(pool.max_abs_spearman, None);
+
+        // a flat parameter with one defined pair left: the maximum
+        // exists and comes from the defined pair only
+        let params = vec![
+            param("x", 0.0, 10.0),
+            param("y", 0.0, 10.0),
+            param("z", 0.0, 10.0),
+        ];
+        let designs: Vec<Design> = [1.0, 2.0, 3.0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, y)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![5.0, y, 2.0 * y],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &designs).unwrap();
+        assert!((pool.max_abs_pearson.unwrap() - 1.0).abs() < 1e-12);
+        assert!((pool.max_abs_spearman.unwrap() - 1.0).abs() < 1e-12);
     }
 
     #[test]
