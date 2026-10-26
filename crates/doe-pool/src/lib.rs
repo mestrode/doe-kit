@@ -22,26 +22,34 @@ use serde_json::Value;
 
 pub use error::{Error, Result};
 
-/// Returns the example pool written by `sampling init`: exactly two
-/// example parameters — `param_uniform` and `param_gaussian` — an empty
-/// `designs` list, no `scope` (defaults to the full parameter ranges) and
-/// no `results` (none evaluated yet). The output is immediately parseable
+/// Returns the example pool written by `sampling init`: exactly three
+/// example parameters — `a` uniform over `[0, 10]`, `b` uniform over
+/// `[-1, 1]`, `c` gaussian over `[0, 5]` with mean 2.5 and sigma 1
+/// (the inputs of the analytic example simulators) — an empty `designs`
+/// list, no `scope` (defaults to the full parameter ranges) and no
+/// `results` (none evaluated yet). The output is immediately parseable
 /// so the other subcommands run on it once the user edits `params`.
 pub fn skeleton() -> Value {
     serde_json::json!({
         "params": [
             {
-                "name": "param_uniform",
+                "name": "a",
                 "min": 0,
                 "max": 10,
                 "distribution": "uniform"
             },
             {
-                "name": "param_gaussian",
+                "name": "b",
+                "min": -1,
+                "max": 1,
+                "distribution": "uniform"
+            },
+            {
+                "name": "c",
                 "min": 0,
-                "max": 10,
-                "mean": 5,
-                "sigma": 2,
+                "max": 5,
+                "mean": 2.5,
+                "sigma": 1,
                 "distribution": "gaussian"
             }
         ],
@@ -98,12 +106,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn skeleton_parses_into_two_example_params_and_no_designs() {
+    fn skeleton_parses_into_three_example_params_and_no_designs() {
         let root = skeleton();
         let params = format::parse_params(&root).expect("skeleton params must parse");
-        assert_eq!(params.len(), 2, "exactly two example parameters");
-        assert_eq!(params[0].name, "param_uniform");
-        assert_eq!(params[1].name, "param_gaussian");
+        assert_eq!(params.len(), 3, "exactly three example parameters");
+        assert_eq!(params[0].name, "a");
+        assert_eq!(params[0].min, 0.0);
+        assert_eq!(params[0].max, 10.0);
+        assert_eq!(params[0].distribution, doe_types::Distribution::Uniform);
+        assert_eq!(params[1].name, "b");
+        assert_eq!(params[1].min, -1.0);
+        assert_eq!(params[1].max, 1.0);
+        assert_eq!(params[1].distribution, doe_types::Distribution::Uniform);
+        assert_eq!(params[2].name, "c");
+        assert_eq!(params[2].min, 0.0);
+        assert_eq!(params[2].max, 5.0);
+        assert_eq!(
+            params[2].distribution,
+            doe_types::Distribution::Gaussian {
+                mean: 2.5,
+                sigma: 1.0
+            }
+        );
         assert!(root.get("scope").is_none(), "no scope: full range");
         assert!(root.get("results").is_none(), "no results until evaluated");
         assert!(root["designs"].as_array().unwrap().is_empty());

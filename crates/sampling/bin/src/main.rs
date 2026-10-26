@@ -8,8 +8,8 @@
 //! default, with a `.bak` backup of the input unless disabled).
 //!
 //! `sampling init` writes a new pool file from the doe-pool skeleton
-//! (two example parameters, no designs) and refuses to overwrite an
-//! existing file.
+//! (three example parameters `a`, `b`, `c`, no designs) and refuses to
+//! overwrite an existing file.
 //!
 //! `sampling stats` analyzes the pool (read-only judgment support before
 //! expensive simulations are run): statistics of the sampling points
@@ -48,8 +48,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Write a new pool file with two example parameters and no designs;
-    /// refuses to overwrite an existing file
+    /// Write a new pool file with three example parameters (`a`, `b`
+    /// uniform, `c` gaussian) and no designs; refuses to overwrite an
+    /// existing file
     #[command(name = "init")]
     Init(InitArgs),
     /// Pooled Latin Hypercube Sampling: augment a design pool with
@@ -186,10 +187,11 @@ fn run_init(args: &InitArgs) -> Result<String, CliError> {
         )));
     }
     let root = doe_pool::skeleton();
+    let n_params = root["params"].as_array().map_or(0, Vec::len);
     let bytes = doe_pool::serialize(&root).map_err(pool)?;
     doe_pool::write_atomic(&args.file, &bytes).map_err(pool)?;
     Ok(format!(
-        "initialized '{}' with 2 example parameters (edit 'params' before use)",
+        "initialized '{}' with {n_params} example parameters (edit 'params' before use)",
         args.file.display()
     ))
 }

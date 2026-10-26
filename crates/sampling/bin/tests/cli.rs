@@ -713,6 +713,41 @@ fn stats_unknown_result_name_exits_1() {
 }
 
 #[test]
+fn init_writes_the_abc_example_parameters() {
+    let dir = temp_dir("init-abc");
+
+    let (out, stdout) = run(&dir, &["init", "pool.json"]);
+    assert!(out.status.success());
+    assert!(
+        stdout.contains("with 3 example parameters"),
+        "unexpected summary: {stdout}"
+    );
+
+    // the created pool declares a uniform over [0, 10], b uniform over
+    // [-1, 1], c gaussian over [0, 5] — the inputs of the analytic
+    // example simulators
+    let root: Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("pool.json")).unwrap()).unwrap();
+    let params = root["params"].as_array().unwrap();
+    assert_eq!(params.len(), 3);
+    assert_eq!(params[0]["name"], "a");
+    assert_eq!(params[0]["min"], 0);
+    assert_eq!(params[0]["max"], 10);
+    assert_eq!(params[0]["distribution"], "uniform");
+    assert_eq!(params[1]["name"], "b");
+    assert_eq!(params[1]["min"], -1);
+    assert_eq!(params[1]["max"], 1);
+    assert_eq!(params[1]["distribution"], "uniform");
+    assert_eq!(params[2]["name"], "c");
+    assert_eq!(params[2]["min"], 0);
+    assert_eq!(params[2]["max"], 5);
+    assert_eq!(params[2]["distribution"], "gaussian");
+    assert_eq!(params[2]["mean"], 2.5);
+    assert_eq!(params[2]["sigma"], 1);
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn init_refuses_an_existing_file() {
     let dir = temp_dir("init-exists");
     let file = dir.join("designs.json");
