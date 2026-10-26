@@ -62,6 +62,12 @@ the whole parameter surface when nothing is known yet, evaluate the
 results, then narrow `scope` in the JSON and run `--add` to refine the
 interesting sections.
 
+Large runs are placed in chunks automatically: `--explore 500` on a
+50-parameter pool works in one invocation (chunks of one design each —
+the standard-LHS loop — there), writing one backup, one iteration and one
+`--json` line. The pool keeps the Latin Hypercube property of one design
+per bin per parameter.
+
 Exit codes: `0` success, `1` validation error, `2` I/O error (missing
 subcommand or unknown subcommand: usage error).
 
@@ -79,9 +85,11 @@ sampling stats --json designs.json >> results.jsonl
 
 The `plhs` object carries `subcommand`, `mode` (`add`/`explore`), `file`,
 `seed`, `cap`, `m`, `designs_before`, `designs_after`, `iteration`,
-`n_params`, `strategy` (`exact`/`greedy`, the selection strategy the run
-actually used), `score` and `elapsed_ms` (the compute phase only: after
-reading the pool, before writing it). The `stats` object carries
+`n_params`, `strategy` (`exact`/`greedy`, or `mixed` when a batched run's
+chunks used different strategies), `chunks` (how many chunks the `m` new
+designs were placed in, 1 for a single-shot run), `score` and `elapsed_ms`
+(the compute phase only: after reading the pool, before writing it). The
+`stats` object carries
 `subcommand`, `file`, `evaluated`, `pool` and `results`, mirroring the
 human report's numbers. This flag is the output convention for every
 future sampling-method subcommand, so benchmark runs can be collected

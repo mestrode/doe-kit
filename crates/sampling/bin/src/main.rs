@@ -235,6 +235,7 @@ fn run(args: &PlhsArgs) -> Result<String, CliError> {
             "iteration": aug.iteration,
             "n_params": params.len(),
             "strategy": aug.strategy.name(),
+            "chunks": aug.chunks,
             "score": aug.score,
             "elapsed_ms": elapsed_ms,
         });

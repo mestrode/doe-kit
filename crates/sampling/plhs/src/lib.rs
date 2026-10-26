@@ -16,7 +16,10 @@
 //!    parameter are scored by the sum of squared Pearson correlations over
 //!    all parameter pairs (in-scope samples plus the candidates) and the
 //!    best assignment wins. Exact enumeration up to a configurable cap,
-//!    greedy sequential selection beyond it.
+//!    greedy sequential selection beyond it. Large runs are placed in
+//!    chunks sized so each chunk's search fits the greedy budget; at 50+
+//!    parameters that degenerates to the standard-LHS loop of one design
+//!    per chunk.
 //!
 //! All computation happens on the transformed `[0, 1]` values; real values
 //! are produced only for output.
@@ -91,10 +94,10 @@ pub use doe_types::{Design, Distribution, Error, Parameter, Result};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
-use binning::{bin_count, candidate_t, empty_bins, occupied_bins};
-use scoring::PairSeries;
+use binning::{bin_count, candidate_t, empty_bins, occupied_bins, sample_bins};
+use scoring::{PairSeries, assignment_score};
 pub use selection::SelectionStrategy;
-use selection::{BinCandidates, select};
+use selection::{BinCandidates, empty_cross_exceeds_budget, select, solvable_batch};
 
 /// The result of [`augment`].
 #[derive(Debug, Clone)]
@@ -107,6 +110,9 @@ pub struct Augmentation {
     pub iteration: u64,
     /// The selection strategy that chose the assignment.
     pub strategy: SelectionStrategy,
+    /// The number of chunks the `m` new designs were placed in (1 when
+    /// the whole run fit a single selection).
+    pub chunks: usize,
 }
 
 /// Samples `m` new designs for the given parameters, extending the Latin
@@ -114,6 +120,21 @@ pub struct Augmentation {
 ///
 /// `cap` is the maximum number of assignments enumerated exactly before
 /// falling back to greedy sequential selection.
+///
+/// # Batching
+///
+/// The `m` new designs are placed in chunks of at most
+/// [`solvable_batch`](selection::solvable_batch)`(p)` designs, the largest
+/// batch whose per-step bin cross product `b^p` fits the greedy fallback's
+/// budget; at 50+ parameters that degenerates to `b = 1` — the standard-LHS
+/// loop. Every chunk draws its candidates from the empty bins of the final
+/// `n + m` bin partition, re-evaluated against the designs earlier chunks
+/// placed, selects, and appends — so the finished pool keeps the Latin
+/// Hypercube property of one design per bin, and a run that fits a single
+/// chunk takes the historical single-shot path, draw for draw. A single
+/// chunk reports the selection's score and strategy; a batched run
+/// reports the pooled score over all pairs with all new designs and the
+/// aggregate strategy (`mixed` when the chunks differed).
 ///
 /// # Errors
 ///
@@ -176,39 +197,163 @@ pub fn augment(
         t_values.push(t);
     }
 
-    // Bins, empty bins and candidate values.
+    // Batched selection (issue #22): the m new designs are placed in
+    // chunks of at most `batch` designs, the largest batch whose
+    // per-step bin cross product b^p fits the greedy budget. Every
+    // chunk draws candidates from the empty bins of the final n + m
+    // partition — re-evaluated against the designs placed so far — so
+    // the finished pool keeps one design per bin per parameter. With a
+    // single chunk this is the historical single-shot path, draw for
+    // draw: the restriction below fires exactly when the old greedy
+    // guard would have, so every historically successful run keeps its
+    // full candidate set.
+    let solvable = solvable_batch(p);
+    let batch = solvable.min(m);
+    let chunks = m.div_ceil(batch);
+
     let mut seed_bytes = [0u8; 32];
     seed_bytes[..8].copy_from_slice(&seed.to_le_bytes());
     let mut rng = ChaCha8Rng::from_seed(seed_bytes);
-    let mut candidates: Vec<BinCandidates> = Vec::with_capacity(p);
-    for (j, param) in params.iter().enumerate() {
-        let bins = bin_count(in_scope[j].len(), m);
-        let occupied = occupied_bins(&t_values[j], bins);
-        let empty = empty_bins(bins, &occupied);
-        if empty.len() < m {
-            return Err(Error::Invariant(format!(
-                "parameter '{}': {} empty bin(s) for {m} new design(s); \
-                 the pigeonhole invariant (>= m empty bins) is violated",
-                param.name,
-                empty.len()
-            )));
+
+    // Designs placed by earlier chunks: real values for the output,
+    // scope-transformed values for occupancy and scoring.
+    let mut placed_values: Vec<Vec<f64>> = vec![Vec::new(); p];
+    let mut placed_t: Vec<Vec<f64>> = vec![Vec::new(); p];
+    let mut strategies: Vec<SelectionStrategy> = Vec::with_capacity(chunks);
+    let mut last_chunk_score = 0.0;
+    // Base pair series of the ORIGINAL designs, built and validated in
+    // the first chunk — after its candidates, keeping the historical
+    // error precedence (pigeonhole invariant before pair validation).
+    // Validating only the originals matters: the pair gate rejects 1-2
+    // shared in-scope designs, and on an empty pool the first chunk
+    // would otherwise fault on the very designs it just placed.
+    let mut base_pairs: Vec<PairSeries> = Vec::new();
+
+    for (chunk, start) in (0..m).step_by(batch).enumerate() {
+        let b = batch.min(m - start);
+
+        // Empty bins of the final partition per parameter, against the
+        // original designs and everything placed so far.
+        let mut empties: Vec<Vec<usize>> = Vec::with_capacity(p);
+        for (j, param) in params.iter().enumerate() {
+            let bins = bin_count(in_scope[j].len(), m);
+            let mut ts = t_values[j].clone();
+            ts.extend_from_slice(&placed_t[j]);
+            let occupied = occupied_bins(&ts, bins);
+            let empty = empty_bins(bins, &occupied);
+            if empty.len() < b {
+                return Err(Error::Invariant(format!(
+                    "parameter '{}': {} empty bin(s) for {b} new design(s); \
+                     the pigeonhole invariant (>= b empty bins) is violated",
+                    param.name,
+                    empty.len()
+                )));
+            }
+            empties.push(empty);
         }
-        let mut t = Vec::with_capacity(empty.len());
-        let mut values = Vec::with_capacity(empty.len());
-        for &b in &empty {
-            let ct = candidate_t(&mut rng, b, bins);
-            t.push(ct);
-            values.push(param.inverse_transform(ct));
+
+        // Restrict the candidate set when the empty-bin cross product
+        // exceeds the greedy budget: sample `solvable` empty bins per
+        // parameter, which bounds the per-step cross product by
+        // `solvable^p` — inside the budget by construction.
+        let restrict = empty_cross_exceeds_budget(empties.iter().map(|e| e.len()));
+
+        let mut candidates: Vec<BinCandidates> = Vec::with_capacity(p);
+        for (j, param) in params.iter().enumerate() {
+            let bins = bin_count(in_scope[j].len(), m);
+            let empty = if restrict {
+                sample_bins(&mut rng, &empties[j], solvable.min(empties[j].len()))
+            } else {
+                empties[j].clone()
+            };
+            let mut t = Vec::with_capacity(empty.len());
+            let mut values = Vec::with_capacity(empty.len());
+            for &bin in &empty {
+                let ct = candidate_t(&mut rng, bin, bins);
+                t.push(ct);
+                values.push(param.inverse_transform(ct));
+            }
+            candidates.push(BinCandidates {
+                bins: empty,
+                t,
+                values,
+            });
         }
-        candidates.push(BinCandidates {
-            bins: empty,
-            t,
-            values,
-        });
+
+        // Base pair series of the original designs (first chunk only:
+        // after the candidates above, preserving the error order).
+        if chunk == 0 {
+            base_pairs = base_pairs_of(params, designs)?;
+        }
+
+        // Working pairs: the base series plus every design placed so far
+        // — placed designs are in scope for all parameters by
+        // construction.
+        let mut working: Vec<PairSeries> = base_pairs.clone();
+        for pair in &mut working {
+            pair.xs.extend_from_slice(&placed_t[pair.a]);
+            pair.ys.extend_from_slice(&placed_t[pair.b]);
+        }
+
+        // Selection of the chunk.
+        let selection = select(b, &working, &candidates, cap)?;
+        strategies.push(selection.strategy);
+        last_chunk_score = selection.score;
+
+        // Append the chunk's designs to the placed pool.
+        for i in 0..b {
+            for j in 0..p {
+                let pick = selection.picks[j][i];
+                placed_values[j].push(candidates[j].values[pick]);
+                placed_t[j].push(candidates[j].t[pick]);
+            }
+        }
     }
 
-    // Pair series for scoring: per pair, the designs in scope for both
-    // parameters (transformed values).
+    // New designs and names (from the original names only, as before).
+    let existing_names: Vec<&str> = designs.iter().map(|d| d.name.as_str()).collect();
+    let mut iteration = next_iteration(existing_names.iter().copied());
+    let existing: BTreeSet<String> = designs.iter().map(|d| d.name.clone()).collect();
+    loop {
+        let collides = (0..m).any(|i| existing.contains(&format!("{iteration}.{}", i + 1)));
+        if !collides {
+            break;
+        }
+        iteration += 1;
+    }
+    let new_designs = (0..m)
+        .map(|i| {
+            let values: Vec<f64> = (0..p).map(|j| placed_values[j][i]).collect();
+            Design {
+                name: format!("{iteration}.{}", i + 1),
+                values,
+            }
+        })
+        .collect();
+
+    let strategy = SelectionStrategy::aggregate(&strategies);
+    let score = if chunks == 1 {
+        last_chunk_score
+    } else {
+        // Pooled final score: every base pair with all m placed designs.
+        assignment_score(&base_pairs, &placed_t, m)
+    };
+
+    Ok(Augmentation {
+        new_designs,
+        score,
+        iteration,
+        strategy,
+        chunks,
+    })
+}
+
+/// Pair series for scoring: per pair, the ORIGINAL designs in scope for
+/// both parameters (scope-transformed values), with the shared-design
+/// validation of [`augment`]. The designs a batched run places itself are
+/// appended per chunk by the caller and never pass this gate.
+fn base_pairs_of(params: &[Parameter], designs: &[Design]) -> Result<Vec<PairSeries>> {
+    let p = params.len();
     let mut pairs = Vec::with_capacity(p * (p - 1) / 2);
     for a in 0..p {
         for b in (a + 1)..p {
@@ -239,42 +384,7 @@ pub fn augment(
             pairs.push(PairSeries { a, b, xs, ys });
         }
     }
-
-    // Selection.
-    let selection = select(m, &pairs, &candidates, cap)?;
-
-    // New designs and names.
-    let existing_names: Vec<&str> = designs.iter().map(|d| d.name.as_str()).collect();
-    let mut iteration = next_iteration(existing_names.iter().copied());
-    let existing: BTreeSet<String> = designs.iter().map(|d| d.name.clone()).collect();
-    loop {
-        let collides = (0..m).any(|i| existing.contains(&format!("{iteration}.{}", i + 1)));
-        if !collides {
-            break;
-        }
-        iteration += 1;
-    }
-    let new_designs = (0..m)
-        .map(|i| {
-            let values: Vec<f64> = (0..p)
-                .map(|j| {
-                    let pick = selection.picks[j][i];
-                    candidates[j].values[pick]
-                })
-                .collect();
-            Design {
-                name: format!("{iteration}.{}", i + 1),
-                values,
-            }
-        })
-        .collect();
-
-    Ok(Augmentation {
-        new_designs,
-        score: selection.score,
-        iteration,
-        strategy: selection.strategy,
-    })
+    Ok(pairs)
 }
 
 use std::collections::BTreeSet;
@@ -606,6 +716,98 @@ mod tests {
         let aug = augment(&params, &[], 5, 42, 1_000_000).unwrap();
         assert_eq!(aug.new_designs.len(), 5);
         assert_eq!(aug.iteration, 1);
+    }
+
+    #[test]
+    fn explore_on_a_fresh_pool_with_50_parameters_works() {
+        // regression for issue #22: `sampling plhs --explore 6` on a fresh
+        // 50-parameter pool used to fail on the greedy cross-product guard
+        // (6^50 combinations). Batching degenerates to one design per
+        // chunk — the standard-LHS loop — and the run succeeds.
+        let params: Vec<Parameter> = (0..50)
+            .map(|j| Parameter::uniform(format!("p{j}"), 0.0, 10.0).unwrap())
+            .collect();
+        let aug = explore(&params, &[], 6, 1, 1_000_000).unwrap();
+        assert_eq!(aug.new_designs.len(), 6);
+        assert_eq!(aug.iteration, 1);
+        // 2^50 already exceeds the greedy budget: one design per chunk
+        assert_eq!(aug.chunks, 6, "50 parameters must batch to m=1 chunks");
+        // a chunk of one design on a fresh pool has a single assignment:
+        // every chunk runs exact
+        assert_eq!(aug.strategy, SelectionStrategy::Exact);
+        assert!(aug.score.is_finite() && aug.score >= 0.0);
+        for (i, design) in aug.new_designs.iter().enumerate() {
+            assert_eq!(design.name, format!("1.{}", i + 1));
+            assert_eq!(design.values.len(), 50);
+            for value in &design.values {
+                assert!((0.0..=10.0).contains(value));
+            }
+        }
+        // Latin Hypercube: 6 equal-width bins per parameter, one design
+        // per bin
+        for j in 0..50 {
+            let mut bins: Vec<usize> = aug
+                .new_designs
+                .iter()
+                .map(|d| (d.values[j] / 10.0 * 6.0) as usize)
+                .collect();
+            bins.sort_unstable();
+            bins.dedup();
+            assert_eq!(bins.len(), 6, "parameter {j}: designs share bins");
+        }
+    }
+
+    #[test]
+    fn augment_with_50_parameters_and_a_scope_batches_too() {
+        // the scoped refinement path takes the same batching; the values
+        // stay inside the scope
+        let params: Vec<Parameter> = (0..50)
+            .map(|j| {
+                Parameter::uniform(format!("p{j}"), 0.0, 10.0)
+                    .unwrap()
+                    .with_scope(2.0, 8.0)
+                    .unwrap()
+            })
+            .collect();
+        let aug = augment(&params, &[], 4, 1, 1_000_000).unwrap();
+        assert_eq!(aug.new_designs.len(), 4);
+        assert_eq!(aug.chunks, 4);
+        for design in &aug.new_designs {
+            assert_eq!(design.values.len(), 50);
+            for value in &design.values {
+                assert!(
+                    (2.0..=8.0).contains(value),
+                    "value {value} outside the scope"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn augmentation_that_fits_reports_a_single_chunk() {
+        // small runs must keep the historical single-shot behaviour
+        let params = vec![
+            Parameter::uniform("x", 0.0, 10.0)
+                .unwrap()
+                .with_scope(2.0, 8.0)
+                .unwrap(),
+            Parameter::gaussian("y", 0.0, 10.0, 5.0, 2.0)
+                .unwrap()
+                .with_scope(3.0, 7.0)
+                .unwrap(),
+        ];
+        let designs: Vec<Design> = (0..12)
+            .map(|i| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![2.2 + i as f64 * 0.5, 3.1 + (i % 5) as f64 * 0.8],
+            })
+            .collect();
+        let aug = augment(&params, &designs, 3, 7, 1_000_000).unwrap();
+        assert_eq!(aug.chunks, 1);
+        // deterministic as before
+        let again = augment(&params, &designs, 3, 7, 1_000_000).unwrap();
+        assert_eq!(aug.new_designs, again.new_designs);
+        assert_eq!(aug.score, again.score);
     }
 
     #[test]
