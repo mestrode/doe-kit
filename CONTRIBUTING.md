@@ -28,6 +28,10 @@ This is a Cargo workspace. Crates are organized by domain:
 - `crates/metamodel/*` — surrogate/metamodel crates (planned)
 - `crates/sensitivity/*` — analysis of evaluated results (`doe-stats`,
   statistics via `sampling stats`)
+- `crates/simulation/*` — simulation input/output crates (`doe-simio`,
+  binary name: `simio`; `test` evaluates the analytic example
+  functions, `export`/`exec`/`import` for external simulators are
+  planned)
 
 A sampling method lands as a lib crate under `crates/sampling/<method>` plus
 a subcommand in `crates/sampling/bin`; method crates are lib-only.
