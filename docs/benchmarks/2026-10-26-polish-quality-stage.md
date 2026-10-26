@@ -64,6 +64,5 @@ selection paths reach near-exact pooled-correlation scores, including the
 instances exact enumeration can never reach. Quality at p>=15/m=10 remains
 limited by the small number of rows, not by the optimizer.
 
-Raw `--json` lines: 14 unique instances x 3 seeds (36 runs total; the
-p=2/m=50 greedy instance was measured once per seed set), collected via
-`>> results.jsonl`.
+Raw `--json` lines: 12 unique instances x 3 seeds (36 runs total),
+collected via `>> results.jsonl`.
