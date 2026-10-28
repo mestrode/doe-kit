@@ -1,0 +1,13 @@
+[package]
+name = "doe-stats-bin"
+description = "doe-stats: presentation of Design of Experiments statistics (human report and JSON, shared front-end library)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository = "https://github.com/mestrode/doe-kit"
+readme = "README.md"
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+doe-stats = { path = "../stats" }

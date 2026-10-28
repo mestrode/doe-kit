@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/doe-kit", "crates/doe-pool", "crates/doe-types", "crates/sampling/bin", "crates/sampling/plhs", "crates/sensitivity/stats", "crates/simulation/simio"]
+members = ["crates/doe-kit", "crates/doe-pool", "crates/doe-types", "crates/sampling/bin", "crates/sampling/plhs", "crates/sensitivity/bin", "crates/sensitivity/stats", "crates/simulation/simio"]
 
 [workspace.package]
 version = "0.1.0"
