@@ -20,21 +20,25 @@
 //! Sections are strict: the caller computes what its view needs, and a
 //! view whose data is absent fails before formatting. The default tier
 //! is compact; `--verbose` switches to the full detail — for the human
-//! report and `--json` alike.
+//! report and `--json` alike. The [`html`](mod@html) module renders the
+//! same data as a single-file interactive HTML page (full tier only).
+
+mod html;
+
+pub use html::{html_input, html_output, html_report, html_sampling};
 
 use doe_stats::{
-    DECILES, InputStats, NamedValue, ParameterDefinition, PoolStats, ResultPairStats, VariableStats,
+    DECILES, InputStats, LostProbability, NamedValue, ParameterDefinition, PoolStats,
+    ResultPairStats, VariableStats,
 };
 
 // ---------------------------------------------------------------------
 // human report
 // ---------------------------------------------------------------------
 
-/// Formats the input section: one line per parameter definition.
-/// Single tier — the definitions are always printed in full.
 /// Total lost probability above which the compact input section warns
 /// (fraction of the untruncated Gaussian mass outside the scope).
-const LOST_PROBABILITY_CRITICAL: f64 = 0.10;
+pub(crate) const LOST_PROBABILITY_CRITICAL: f64 = 0.10;
 
 /// Formats the input section: one line per parameter definition. The
 /// default is compact: definitions only, plus a warning under a
@@ -64,20 +68,26 @@ pub fn human_input(input: &InputStats, verbose: bool) -> String {
             } else {
                 // the warning tracks the scope: what sampling actually
                 // covers; a full-range scope equals the range figures
-                let (below, above) = match (lp.below_scope, lp.above_scope) {
-                    (Some(below), Some(above)) => (below, above),
-                    _ => (lp.below_range, lp.above_range),
-                };
-                if below + above > LOST_PROBABILITY_CRITICAL {
+                if scope_loss(lp) > LOST_PROBABILITY_CRITICAL {
                     out.push_str(&format!(
                         "    warning: {:.1}% of the probability mass lies outside the scope\n",
-                        (below + above) * 100.0
+                        scope_loss(lp) * 100.0
                     ));
                 }
             }
         }
     }
     out
+}
+
+/// The lost-probability scope loss: the untruncated Gaussian mass
+/// outside the scope, or outside the definition range when the scope
+/// is the full range — the figure the compact input warning tracks.
+pub(crate) fn scope_loss(lp: &LostProbability) -> f64 {
+    match (lp.below_scope, lp.above_scope) {
+        (Some(below), Some(above)) => below + above,
+        _ => lp.below_range + lp.above_range,
+    }
 }
 
 /// One parameter definition as a report line fragment (without name).

@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>doe-stats report</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<style>
+:root {
+  --fg: #1c2733; --bg: #f7f8fa; --card: #ffffff; --accent: #0b6e4f;
+  --muted: #5a6672; --border: #d8dde3; --warn: #c62828;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+       color: var(--fg); background: var(--bg); }
+header { padding: .8rem 1rem .4rem; }
+h1 { font-size: 1.15rem; margin: 0; word-break: break-all; }
+#report-meta { color: var(--muted); font-size: .85rem; margin-top: .15rem; }
+#tabs { position: sticky; top: 0; z-index: 10; display: flex; gap: .25rem;
+        padding: .4rem .75rem; background: var(--card);
+        border-bottom: 1px solid var(--border); overflow-x: auto; }
+#tabs button { border: 1px solid var(--border); background: var(--bg);
+               padding: .35rem .8rem; border-radius: 999px; font: inherit;
+               cursor: pointer; white-space: nowrap; }
+#tabs button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+main { padding: .6rem .8rem 3rem; }
+section { display: none; }
+section.active { display: block; }
+.card { background: var(--card); border: 1px solid var(--border);
+        border-radius: 10px; padding: .7rem .9rem; margin: .6rem 0; }
+.card h3 { margin: 0 0 .35rem; font-size: 1rem; }
+table.data { border-collapse: collapse; width: 100%; font-size: .85rem; }
+table.data th, table.data td { padding: .3rem .45rem; border-bottom: 1px solid var(--border);
+                               text-align: left; vertical-align: top; }
+table.data th { width: 40%; font-weight: 500; color: var(--muted); white-space: nowrap; }
+.matrix-wrap { overflow-x: auto; }
+table.matrix { border-collapse: separate; border-spacing: 2px; font-size: .72rem; margin: .2rem 0; }
+table.matrix th { font-weight: 600; color: var(--muted); white-space: nowrap; }
+table.matrix th.k { text-align: left; position: sticky; left: 0; background: var(--card); }
+table.matrix td.cell { text-align: center; padding: .32rem .35rem; border-radius: 4px;
+                       cursor: pointer; min-width: 2.6rem; font-variant-numeric: tabular-nums; }
+table.matrix td.diag { background: #eceff1; text-align: center; }
+.chart-panel { position: sticky; top: 3.1rem; z-index: 5; background: var(--card);
+               border: 1px solid var(--border); border-radius: 10px;
+               padding: .5rem .6rem .6rem; margin: .4rem 0 .6rem; }
+body.no-nav .chart-panel { top: .3rem; }
+.chart-controls { display: flex; align-items: center; gap: .5rem; justify-content: center;
+                  margin-bottom: .2rem; }
+.chart-controls button { font: inherit; padding: .25rem .8rem; border: 1px solid var(--border);
+                         background: var(--bg); border-radius: 6px; cursor: pointer; }
+.combo-label { font-size: .85rem; color: var(--fg); min-width: 60%; text-align: center;
+               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chart { height: 280px; }
+.chart-small { height: 200px; }
+.offline-note { display: none; color: var(--muted); font-size: .8rem; padding: .2rem .2rem 0; }
+body.offline .offline-note { display: block; }
+.warning { color: var(--warn); font-size: .85rem; margin: .15rem 0 .3rem; }
+.range-bar { position: relative; height: 14px; background: #e3e8ee;
+             border-radius: 4px; margin: .5rem 0 .15rem; }
+.range-scope { position: absolute; top: 0; bottom: 0; background: var(--accent);
+               opacity: .55; border-radius: 4px; }
+.range-ticks { display: flex; justify-content: space-between; color: var(--muted); font-size: .75rem; }
+details { margin-top: .35rem; }
+details summary { cursor: pointer; color: var(--muted); font-size: .85rem; }
+noscript { display: block; padding: 1rem; color: var(--warn); }
+@media (min-width: 700px) {
+  main { max-width: 1100px; margin: 0 auto; }
+  .chart { height: 340px; }
+  table.data th { width: 25%; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="report-title">doe-stats report</h1>
+  <div id="report-meta"></div>
+</header>
+<nav id="tabs"></nav>
+<main>
+  <section id="section-input">
+    <div id="input-body"></div>
+  </section>
+  <section id="section-sampling">
+    <div class="chart-panel">
+      <div class="chart-controls">
+        <button id="sampling-prev" aria-label="previous">&#9664;</button>
+        <span class="combo-label" id="sampling-label"></span>
+        <button id="sampling-next" aria-label="next">&#9654;</button>
+      </div>
+      <div id="sampling-chart" class="chart"></div>
+      <div class="offline-note">charts need internet (Plotly CDN); the statistics
+        and tables below are complete without them.</div>
+    </div>
+    <div id="sampling-body"></div>
+  </section>
+  <section id="section-output">
+    <div class="chart-panel">
+      <div class="chart-controls">
+        <button id="output-prev" aria-label="previous">&#9664;</button>
+        <span class="combo-label" id="output-label"></span>
+        <button id="output-next" aria-label="next">&#9654;</button>
+      </div>
+      <div id="output-chart" class="chart"></div>
+      <div class="offline-note">charts need internet (Plotly CDN); the statistics
+        and tables below are complete without them.</div>
+    </div>
+    <div id="output-body"></div>
+  </section>
+</main>
+<noscript>JavaScript is required to render this report; the embedded data and the
+  command-line report carry the same statistics.</noscript>
+<script type="application/json" id="report-data">__DATA__</script>
+<script>
+(function () {
+  'use strict';
+
+  var DATA = JSON.parse(document.getElementById('report-data').textContent);
+  var OFFLINE = typeof Plotly === 'undefined';
+  if (OFFLINE) { document.body.className += ' offline'; }
+
+  // ------------------------------------------------------------ helpers
+
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) { n.className = cls; }
+    if (text !== undefined && text !== null) { n.textContent = text; }
+    return n;
+  }
+  function fmt(x, d) {
+    if (x === null || x === undefined) { return 'n/a'; }
+    return Number(x).toFixed(d === undefined ? 6 : d);
+  }
+  function pct(x) { return (100 * x).toFixed(1) + '%'; }
+  function rel(v) { return v ? fmt(v.value) + ' (' + v.parameter + ')' : 'n/a'; }
+  function short(name, n) {
+    n = n || 8;
+    return name.length > n ? name.slice(0, n - 1) + '\u2026' : name;
+  }
+  function corrColor(r) {
+    var t = Math.min(1, Math.abs(r));
+    var a = 0.12 + 0.85 * t;
+    return r >= 0 ? 'rgba(211,47,47,' + a + ')' : 'rgba(30,136,229,' + a + ')';
+  }
+  function eta2Color(e) {
+    var t = Math.min(1, Math.max(0, e));
+    return 'rgba(0,105,92,' + (0.12 + 0.85 * t) + ')';
+  }
+  function plotCfg() { return { responsive: true, displayModeBar: false }; }
+
+  function kvTable(rows) {
+    var t = el('table', 'data');
+    rows.forEach(function (r) {
+      var tr = el('tr');
+      tr.appendChild(el('th', null, r[0]));
+      tr.appendChild(el('td', null, r[1]));
+      t.appendChild(tr);
+    });
+    return t;
+  }
+
+  // ------------------------------------------------------------ header + tabs
+
+  document.title = 'doe-stats report: ' + DATA.file;
+  document.getElementById('report-title').textContent = DATA.file;
+
+  (function () {
+    var meta = [];
+    var nParams = 0;
+    if (DATA.input) { nParams = DATA.input.parameters.length; }
+    else if (DATA.pool) { nParams = DATA.pool.parameters.length; }
+    else if (DATA.results && DATA.results[0]) { nParams = DATA.results[0].parameters.length; }
+    if (DATA.pool) { meta.push(DATA.pool.total + ' designs'); }
+    if (DATA.evaluated !== undefined && DATA.evaluated !== null) {
+      meta.push(DATA.evaluated + ' evaluated');
+    }
+    if (nParams) { meta.push(nParams + ' parameters'); }
+    document.getElementById('report-meta').textContent = meta.join(', ');
+  })();
+
+  var SECTIONS = [];
+  if (DATA.input) { SECTIONS.push('input'); }
+  if (DATA.pool) { SECTIONS.push('sampling'); }
+  if (DATA.results) { SECTIONS.push('output'); }
+
+  ['input', 'sampling', 'output'].forEach(function (id) {
+    if (SECTIONS.indexOf(id) < 0) {
+      var node = document.getElementById('section-' + id);
+      if (node && node.parentNode) { node.parentNode.removeChild(node); }
+    }
+  });
+
+  var nav = document.getElementById('tabs');
+  if (SECTIONS.length < 2) {
+    nav.style.display = 'none';
+    document.body.className += ' no-nav';
+  }
+  SECTIONS.forEach(function (id) {
+    var b = el('button', null, id);
+    b.addEventListener('click', function () { showSection(id); });
+    nav.appendChild(b);
+  });
+  function showSection(id) {
+    SECTIONS.forEach(function (s) {
+      document.getElementById('section-' + s).className =
+        s === id ? 'active' : '';
+    });
+    Array.prototype.forEach.call(nav.children, function (b) {
+      b.className = b.textContent === id ? 'active' : '';
+    });
+    if (!OFFLINE) {
+      if (id === 'sampling') { drawSamplingCombo(SAMPLING.current()); }
+      if (id === 'output') { drawOutputCombo(OUTPUT.current()); }
+    }
+  }
+
+  // ------------------------------------------------------------ input section
+
+  function renderInput() {
+    var host = document.getElementById('input-body');
+    var critical = {};
+    (DATA.critical_params || []).forEach(function (n) { critical[n] = true; });
+    (DATA.input.parameters || []).forEach(function (p, i) {
+      var card = el('article', 'card');
+      card.appendChild(el('h3', null, p.name));
+      var lp = p.lost_probability;
+      if (critical[p.name] && lp) {
+        var loss = (lp.below_scope !== undefined && lp.above_scope !== undefined)
+          ? lp.below_scope + lp.above_scope
+          : lp.below_range + lp.above_range;
+        card.appendChild(el('p', 'warning',
+          'warning: ' + pct(loss) + ' of the probability mass lies outside the scope'));
+      }
+      var rows = [
+        ['distribution', p.distribution],
+        ['range', '[' + p.min + ', ' + p.max + ']']
+      ];
+      if (p.mean !== null && p.mean !== undefined) {
+        rows.push(['mean / sigma', p.mean + ' / ' + p.sigma]);
+      }
+      if (p.scope) {
+        rows.push(['scope', '[' + p.scope[0] + ', ' + p.scope[1] + '] (' +
+                   pct(p.scope_fraction) + ' of range)']);
+      } else {
+        rows.push(['scope', 'full range']);
+      }
+      if (lp) {
+        rows.push(['lost probability (range)', pct(lp.below_range + lp.above_range) +
+                   ' outside (' + pct(lp.below_range) + ' below, ' +
+                   pct(lp.above_range) + ' above)']);
+        if (lp.below_scope !== undefined) {
+          rows.push(['lost probability (scope)', pct(lp.below_scope + lp.above_scope) +
+                     ' outside (' + pct(lp.below_scope) + ' below, ' +
+                     pct(lp.above_scope) + ' above)']);
+        }
+      }
+      card.appendChild(kvTable(rows));
+      if (p.distribution === 'gaussian') {
+        var plot = el('div', 'chart chart-small');
+        plot.id = 'input-plot-' + i;
+        card.appendChild(plot);
+        drawGaussian(p, plot.id);
+      } else {
+        card.appendChild(uniformBar(p));
+      }
+      host.appendChild(card);
+    });
+  }
+
+  function uniformBar(p) {
+    var wrap = el('div');
+    var bar = el('div', 'range-bar');
+    var span = p.max - p.min;
+    if (p.scope) {
+      var fill = el('div', 'range-scope');
+      fill.style.left = (100 * (p.scope[0] - p.min) / span) + '%';
+      fill.style.width = (100 * (p.scope[1] - p.scope[0]) / span) + '%';
+      bar.appendChild(fill);
+    } else {
+      var full = el('div', 'range-scope');
+      full.style.left = '0%';
+      full.style.width = '100%';
+      bar.appendChild(full);
+    }
+    var ticks = el('div', 'range-ticks');
+    ticks.appendChild(el('span', null, String(p.min)));
+    ticks.appendChild(el('span', null, String(p.max)));
+    wrap.appendChild(bar);
+    wrap.appendChild(ticks);
+    return wrap;
+  }
+
+  // the curve is drawn from the definition (mean/sigma over the range);
+  // the displayed figures (shading percentages) come from the payload
+  function drawGaussian(p, id) {
+    if (OFFLINE) { return; }
+    var n = 160, xs = [], ys = [];
+    var step = (p.max - p.min) / (n - 1);
+    for (var i = 0; i < n; i++) {
+      var x = p.min + i * step;
+      xs.push(x);
+      ys.push(Math.exp(-Math.pow(x - p.mean, 2) / (2 * p.sigma * p.sigma)));
+    }
+    var shapes = [{ type: 'line', x0: p.mean, x1: p.mean, y0: 0, y1: 1,
+                   yref: 'paper', line: { color: '#5a6672', width: 1, dash: 'dot' } }];
+    if (p.scope) {
+      shapes.push({ type: 'rect', x0: p.min, x1: p.scope[0], y0: 0, y1: 1,
+                    yref: 'paper', fillcolor: 'rgba(198,40,40,0.15)', line: { width: 0 } });
+      shapes.push({ type: 'rect', x0: p.scope[1], x1: p.max, y0: 0, y1: 1,
+                    yref: 'paper', fillcolor: 'rgba(198,40,40,0.15)', line: { width: 0 } });
+    }
+    Plotly.newPlot(id, [{ x: xs, y: ys, mode: 'lines',
+                          line: { color: '#0b6e4f', width: 2 } }],
+      { margin: { l: 40, r: 10, t: 10, b: 35 }, shapes: shapes, showlegend: false,
+        xaxis: { title: { text: p.name } }, yaxis: { title: { text: 'pdf (scaled)' } } },
+      plotCfg());
+  }
+
+  // ------------------------------------------------------------ controller
+
+  function makeController(prefix, combos, labelFn, drawFn) {
+    var idx = 0;
+    var label = document.getElementById(prefix + '-label');
+    function show(i) {
+      idx = ((i % combos.length) + combos.length) % combos.length;
+      label.textContent = labelFn(combos[idx]) + ' (' + (idx + 1) + '/' + combos.length + ')';
+      drawFn(combos[idx]);
+    }
+    document.getElementById(prefix + '-prev')
+      .addEventListener('click', function () { show(idx - 1); });
+    document.getElementById(prefix + '-next')
+      .addEventListener('click', function () { show(idx + 1); });
+    show(0);
+    return {
+      goto: function (matcher) {
+        for (var i = 0; i < combos.length; i++) {
+          if (matcher(combos[i])) { show(i); return; }
+        }
+      },
+      current: function () { return combos[idx]; }
+    };
+  }
+
+  // ------------------------------------------------------------ sampling section
+
+  var SAMPLING = null;
+
+  function renderSampling() {
+    var pool = DATA.pool;
+    var host = document.getElementById('sampling-body');
+
+    var rows = [
+      ['min pairwise distance', opt(pool.min_pairwise_distance, 'n/a (single design)')],
+      ['mean pairwise distance', opt(pool.mean_pairwise_distance, 'n/a (single design)')],
+      ['median pairwise distance', opt(pool.median_pairwise_distance, 'n/a (single design)')],
+      ['mean nearest neighbor', opt(pool.mean_nearest_neighbor, 'n/a (single design)')],
+      ['discrepancy (CL2)', fmt(pool.discrepancy_cl2)],
+      ['pooled pair r2', opt(pool.pooled_pair_r2, 'n/a (n < 3, single parameter or no variance)')],
+      ['empty decile slots', pool.empty_decile_slots + ' of ' + pool.parameters.length * 10],
+      ['pairs', (pool.pairs || []).length + ', max |pearson| ' +
+       opt(pool.max_abs_pearson, 'n/a') + ', max |spearman| ' +
+       opt(pool.max_abs_spearman, 'n/a')]
+    ];
+    var metrics = el('div', 'card');
+    metrics.appendChild(el('h3', null, 'sampling points'));
+    metrics.appendChild(kvTable(rows));
+    host.appendChild(metrics);
+
+    var combos = [];
+    pool.parameters.forEach(function (p) {
+      combos.push({ type: 'deciles', name: p.name });
+    });
+    (pool.pairs || []).forEach(function (pr) {
+      combos.push({ type: 'pair', a: pr.a, b: pr.b });
+    });
+    SAMPLING = makeController('sampling', combos, samplingLabel, drawSamplingCombo);
+
+    host.appendChild(samplingMatrix(pool));
+
+    var table = el('div', 'card');
+    table.appendChild(el('h3', null, 'per-parameter statistics'));
+    var scroll = el('div', 'matrix-wrap');
+    scroll.appendChild(parameterTable(pool));
+    table.appendChild(scroll);
+    host.appendChild(table);
+  }
+
+  function opt(v, na) { return v === null || v === undefined ? na : fmt(v); }
+
+  function samplingLabel(c) {
+    return c.type === 'deciles' ? 'deciles: ' + c.name : c.a + ' vs ' + c.b;
+  }
+
+  function drawSamplingCombo(c) {
+    if (OFFLINE) { return; }
+    if (c.type === 'deciles') {
+      var p = null;
+      DATA.pool.parameters.forEach(function (q) { if (q.name === c.name) { p = q; } });
+      if (!p) { return; }
+      var xs = p.deciles.map(function (_, i) { return 'd' + (i + 1); });
+      Plotly.newPlot('sampling-chart',
+        [{ x: xs, y: p.deciles, type: 'bar', marker: { color: '#1e88e5' } }],
+        { margin: { l: 45, r: 10, t: 10, b: 35 },
+          xaxis: { title: { text: 'deciles of ' + c.name } },
+          yaxis: { title: { text: 'designs' } } },
+        plotCfg());
+    } else {
+      Plotly.newPlot('sampling-chart',
+        [{ x: DATA.points.parameters[c.a], y: DATA.points.parameters[c.b],
+           mode: 'markers', marker: { size: 8, color: '#0b6e4f' } }],
+        { margin: { l: 50, r: 10, t: 10, b: 40 },
+          xaxis: { title: { text: c.a } }, yaxis: { title: { text: c.b } } },
+        plotCfg());
+    }
+  }
+
+  function samplingMatrix(pool) {
+    var params = pool.parameters;
+    var showValues = params.length <= 12;
+    var byPair = {};
+    (pool.pairs || []).forEach(function (pr) {
+      byPair[pr.a + ' ' + pr.b] = pr;
+      byPair[pr.b + ' ' + pr.a] = pr;
+    });
+    var card = el('div', 'card');
+    card.appendChild(el('h3', null,
+      'parameter correlations (pearson; click a cell to plot, diagonal for deciles)'));
+    var scroll = el('div', 'matrix-wrap');
+    var t = el('table', 'matrix');
+    var head = el('tr');
+    head.appendChild(el('th', null, ''));
+    params.forEach(function (p) {
+      var th = el('th', null, short(p.name));
+      th.title = p.name;
+      head.appendChild(th);
+    });
+    t.appendChild(head);
+    params.forEach(function (rp) {
+      var tr = el('tr');
+      var th = el('th', 'k', short(rp.name));
+      th.title = rp.name;
+      tr.appendChild(th);
+      params.forEach(function (cp) {
+        if (rp.name === cp.name) {
+          var d = el('td', 'cell diag', '\u25cb');
+          d.title = 'decile histogram of ' + rp.name;
+          d.addEventListener('click', function () {
+            SAMPLING.goto(function (c) { return c.type === 'deciles' && c.name === rp.name; });
+          });
+          tr.appendChild(d);
+          return;
+        }
+        var pr = byPair[rp.name + ' ' + cp.name];
+        var td = el('td', 'cell');
+        if (pr && pr.pearson !== null && pr.pearson !== undefined) {
+          td.style.background = corrColor(pr.pearson);
+          if (Math.abs(pr.pearson) > 0.6) { td.style.color = '#fff'; }
+          td.title = rp.name + ' vs ' + cp.name + ': pearson ' + fmt(pr.pearson) +
+            ', spearman ' + fmt(pr.spearman);
+          if (showValues) { td.textContent = pr.pearson.toFixed(3); }
+        } else {
+          td.style.background = '#eceff1';
+          td.title = rp.name + ' vs ' + cp.name + ': pearson n/a, spearman n/a';
+          if (showValues) { td.textContent = '\u2013'; }
+        }
+        td.addEventListener('click', function () {
+          SAMPLING.goto(function (c) {
+            return c.type === 'pair' && c.a === rp.name && c.b === cp.name;
+          });
+        });
+        tr.appendChild(td);
+      });
+      t.appendChild(tr);
+    });
+    scroll.appendChild(t);
+    card.appendChild(scroll);
+    return card;
+  }
+
+  function parameterTable(pool) {
+    var t = el('table', 'data');
+    var head = el('tr');
+    ['parameter', 'n', 'min', 'max', 'mean', 'median', 'std',
+     'outer deciles', 'decile counts'].forEach(function (h) {
+      head.appendChild(el('th', null, h));
+    });
+    t.appendChild(head);
+    pool.parameters.forEach(function (p) {
+      var tr = el('tr');
+      [p.name, p.n, fmt(p.min), fmt(p.max), fmt(p.mean), fmt(p.median), fmt(p.std),
+       p.outer_deciles, p.deciles.join(' ')].forEach(function (v, i) {
+        var td = el('td', null, String(v));
+        if (i === 0) { td.className = 'k'; }
+        tr.appendChild(td);
+      });
+      t.appendChild(tr);
+    });
+    return t;
+  }
+
+  // ------------------------------------------------------------ output section
+
+  var OUTPUT = null;
+
+  function renderOutput() {
+    var host = document.getElementById('output-body');
+    var results = DATA.results || [];
+    if (!results.length) { return; }
+
+    var combos = [];
+    results.forEach(function (v) {
+      v.parameters.forEach(function (p) {
+        combos.push({ type: 'scatter', result: v.name, param: p.name });
+      });
+    });
+    OUTPUT = makeController('output', combos, function (c) {
+      return c.param + ' \u2192 ' + c.result;
+    }, drawOutputCombo);
+
+    host.appendChild(relationsMatrix(results));
+
+    results.forEach(function (v) { host.appendChild(variableCard(v)); });
+
+    var op = DATA.output_pairs;
+    if (op && op.pairs && op.pairs.length) {
+      var card = el('div', 'card');
+      card.appendChild(el('h3', null, 'output pairs'));
+      var t = el('table', 'data');
+      var head = el('tr');
+      ['a', 'b', 'pearson', 'spearman', 'n'].forEach(function (h) {
+        head.appendChild(el('th', null, h));
+      });
+      t.appendChild(head);
+      op.pairs.forEach(function (pr) {
+        var tr = el('tr');
+        [pr.a, pr.b, opt(pr.pearson, 'n/a'), opt(pr.spearman, 'n/a'), pr.n]
+          .forEach(function (v, i) {
+            var td = el('td', null, String(v));
+            if (i < 2) { td.className = 'k'; }
+            tr.appendChild(td);
+          });
+        t.appendChild(tr);
+      });
+      card.appendChild(t);
+      host.appendChild(card);
+    }
+  }
+
+  function relationsMatrix(results) {
+    var params = results[0].parameters;
+    var showValues = params.length <= 12;
+    var card = el('div', 'card');
+    card.appendChild(el('h3', null,
+      'input \u2192 output relations (eta2; click a cell to plot)'));
+    var scroll = el('div', 'matrix-wrap');
+    var t = el('table', 'matrix');
+    var head = el('tr');
+    head.appendChild(el('th', null, ''));
+    params.forEach(function (p) {
+      var th = el('th', null, short(p.name));
+      th.title = p.name;
+      head.appendChild(th);
+    });
+    t.appendChild(head);
+    results.forEach(function (v) {
+      var tr = el('tr');
+      var th = el('th', 'k', short(v.name));
+      th.title = v.name;
+      tr.appendChild(th);
+      v.parameters.forEach(function (p) {
+        var td = el('td', 'cell');
+        if (p.eta2 !== null && p.eta2 !== undefined) {
+          td.style.background = eta2Color(p.eta2);
+          if (p.eta2 > 0.6) { td.style.color = '#fff'; }
+          td.title = p.name + ' \u2192 ' + v.name + ': eta2 ' + fmt(p.eta2) +
+            ', pearson ' + opt(p.pearson, 'n/a') + ', spearman ' + opt(p.spearman, 'n/a');
+          if (showValues) { td.textContent = p.eta2.toFixed(3); }
+        } else {
+          td.style.background = '#eceff1';
+          td.title = p.name + ' \u2192 ' + v.name + ': eta2 n/a';
+          if (showValues) { td.textContent = '\u2013'; }
+        }
+        td.addEventListener('click', function () {
+          OUTPUT.goto(function (c) {
+            return c.result === v.name && c.param === p.name;
+          });
+        });
+        tr.appendChild(td);
+      });
+      t.appendChild(tr);
+    });
+    scroll.appendChild(t);
+    card.appendChild(scroll);
+    return card;
+  }
+
+  function drawOutputCombo(c) {
+    if (OFFLINE) { return; }
+    var v = null;
+    DATA.results.forEach(function (q) { if (q.name === c.result) { v = q; } });
+    if (!v) { return; }
+    var pts = DATA.points;
+    var xs = [], ys = [], minIdx = -1, maxIdx = -1;
+    for (var i = 0; i < pts.designs.length; i++) {
+      var y = pts.results[c.result][i];
+      if (y === null || y === undefined) { continue; }
+      if (pts.designs[i] === v.extremes.min_design) { minIdx = xs.length; }
+      if (pts.designs[i] === v.extremes.max_design) { maxIdx = xs.length; }
+      xs.push(pts.parameters[c.param][i]);
+      ys.push(y);
+    }
+    var traces = [{ x: xs, y: ys, mode: 'markers', name: 'designs',
+                    marker: { size: 7, color: '#90a4ae' } }];
+    if (minIdx >= 0) {
+      traces.push({ x: [xs[minIdx]], y: [ys[minIdx]], mode: 'markers',
+                    name: 'min (' + v.extremes.min_design + ')',
+                    marker: { size: 12, color: '#1e88e5',
+                              line: { color: '#0d47a1', width: 2 } } });
+    }
+    if (maxIdx >= 0) {
+      traces.push({ x: [xs[maxIdx]], y: [ys[maxIdx]], mode: 'markers',
+                    name: 'max (' + v.extremes.max_design + ')',
+                    marker: { size: 12, color: '#d32f2f',
+                              line: { color: '#b71c1c', width: 2 } } });
+    }
+    Plotly.newPlot('output-chart', traces,
+      { margin: { l: 55, r: 10, t: 10, b: 40 }, legend: { orientation: 'h' },
+        xaxis: { title: { text: c.param } }, yaxis: { title: { text: c.result } } },
+      plotCfg());
+  }
+
+  function variableCard(v) {
+    var card = el('article', 'card');
+    card.appendChild(el('h3', null, v.name));
+    card.appendChild(kvTable([
+      ['evaluated', v.n + ' of ' + v.total],
+      ['min / max', fmt(v.min) + ' / ' + fmt(v.max)],
+      ['mean / median / std', fmt(v.mean) + ' / ' + fmt(v.median) + ' / ' + fmt(v.std)],
+      ['min at', v.extremes.min_design],
+      ['max at', v.extremes.max_design],
+      ['strongest relations', 'max |pearson| ' + rel(v.relations.max_abs_pearson) +
+       ', max |spearman| ' + rel(v.relations.max_abs_spearman) +
+       ', max eta2 ' + rel(v.relations.max_eta2)]
+    ]));
+    var details = el('details');
+    details.appendChild(el('summary', null, 'per-parameter details'));
+    var scroll = el('div', 'matrix-wrap');
+    var t = el('table', 'data');
+    var head = el('tr');
+    ['parameter', 'pearson', 'spearman', 'eta2', 'in scope', 'outside scope',
+     'decile means'].forEach(function (h) { head.appendChild(el('th', null, h)); });
+    t.appendChild(head);
+    v.parameters.forEach(function (p) {
+      var tr = el('tr');
+      var cells = [
+        p.name,
+        opt(p.pearson, 'n/a'), opt(p.spearman, 'n/a'), opt(p.eta2, 'n/a'),
+        p.in_scope.count + ', mean ' + fmt(p.in_scope.mean) + ', std ' + fmt(p.in_scope.std),
+        p.out_of_scope ? p.out_of_scope.count + ', mean ' + fmt(p.out_of_scope.mean) +
+          ', std ' + fmt(p.out_of_scope.std) : 'none evaluated',
+        p.deciles.map(function (d) { return d.mean === null ? '\u2013' : fmt(d.mean); }).join(' ')
+      ];
+      cells.forEach(function (c, i) {
+        var td = el('td', null, c);
+        if (i === 0) { td.className = 'k'; }
+        tr.appendChild(td);
+      });
+      t.appendChild(tr);
+    });
+    scroll.appendChild(t);
+    details.appendChild(scroll);
+    card.appendChild(details);
+    return card;
+  }
+
+  // ------------------------------------------------------------ boot
+
+  if (DATA.input) { renderInput(); }
+  if (DATA.pool) { renderSampling(); }
+  if (DATA.results) { renderOutput(); }
+  if (SECTIONS.length) { showSection(SECTIONS[0]); }
+})();
+</script>
+</body>
+</html>
