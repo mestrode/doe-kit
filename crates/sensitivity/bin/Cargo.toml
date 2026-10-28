@@ -1,0 +1,20 @@
+[package]
+name = "doe-stats-bin"
+description = "doe-stats: statistical views of a doe pool (input, sampling, output) — front-end library and binary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository = "https://github.com/mestrode/doe-kit"
+readme = "README.md"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+doe-stats = { path = "../stats" }
+doe-types = { path = "../../doe-types" }
+doe-pool = { path = "../../doe-pool" }
+
+[[bin]]
+name = "doe-stats"
+path = "src/main.rs"

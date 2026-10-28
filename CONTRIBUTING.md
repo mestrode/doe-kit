@@ -26,8 +26,12 @@ This is a Cargo workspace. Crates are organized by domain:
   name: `sampling`; one subcommand per sampling method)
 - `crates/sampling/*` — sampling method crates (`plhs`, ...)
 - `crates/metamodel/*` — surrogate/metamodel crates (planned)
+- `crates/sensitivity/bin` — the `doe-stats` CLI crate
+  (`doe-stats-bin`, binary name: `doe-stats`; the report formatting
+  library plus the binary)
 - `crates/sensitivity/*` — analysis of evaluated results (`doe-stats`,
-  statistics via `sampling stats`)
+  pure statistics computation, used by `sampling stats` and the
+  `doe-stats` binary)
 - `crates/simulation/*` — simulation input/output crates (`doe-simio`,
   binary name: `simio`; `test` evaluates the analytic example
   functions, `export`/`exec`/`import` for external simulators are
@@ -63,7 +67,16 @@ cadence; publication to crates.io is manual and per crate.
   1 validation error, 2 I/O error. Keep these stable.
 - Exactly one of `--add` / `--explore` must be provided.
 - `sampling stats` reports statistics only: it writes no files and makes
-  no recommendations; the judgment stays with the user.
+  no recommendations; the judgment stays with the user. Its report is
+  the full `doe-stats` report: the sections run in order (input,
+  sampling, output) and the first section that cannot run is a
+  validation error (exit 1) — result names are validated only where
+  results are read.
+- The `doe-stats` CLI contract: `doe-stats input|sampling|output file`
+  plus the bare `doe-stats file` for the full report; statistics-only,
+  read-only (no backups, no `--no-backup`), flags `--json`/`--verbose`
+  only, exit codes 0 success / 1 validation error / 2 usage or I/O
+  error, unknown subcommand is a usage error. Keep these stable.
 - `--json` on a subcommand means one machine-readable line on stdout,
   human output suppressed, errors still human on stderr. Every
   sampling-method subcommand gets this flag.

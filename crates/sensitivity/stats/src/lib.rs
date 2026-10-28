@@ -33,7 +33,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use doe_types::error::{Error, Result};
-use doe_types::{Design, Parameter};
+use doe_types::{Design, Distribution, Parameter};
 use plhs::scoring::pearson;
 
 pub use doe_types::Results;
@@ -586,6 +586,204 @@ pub fn analyze(
         });
     }
     Ok(out)
+}
+
+/// One parameter's definition as reported by the input analysis.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ParameterDefinition {
+    /// Parameter name.
+    pub name: String,
+    /// Lower-case distribution name (`uniform` or `gaussian`).
+    pub distribution: String,
+    /// Definition range lower bound.
+    pub min: f64,
+    /// Definition range upper bound.
+    pub max: f64,
+    /// Mean of the untruncated Gaussian; `None` for uniform parameters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mean: Option<f64>,
+    /// Standard deviation of the untruncated Gaussian; `None` for uniform
+    /// parameters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sigma: Option<f64>,
+    /// Scope bounds `[min, max]` when narrower than the definition range;
+    /// `None` when the scope is the full definition range.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<(f64, f64)>,
+    /// Scope width as a fraction of the definition range (1.0 = full).
+    pub scope_fraction: f64,
+}
+
+/// Input analysis: the parameter definitions of the pool. Definitions
+/// only — how the actual sampling points fill the ranges is the
+/// sampling analysis ([`analyze_pool`]).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct InputStats {
+    /// One entry per parameter, in pool order.
+    pub parameters: Vec<ParameterDefinition>,
+}
+
+/// Reports the parameter definitions: distribution, definition range,
+/// the Gaussian's mean and sigma, and the scope with its width as a
+/// fraction of the definition range. Definitions cannot fail to
+/// analyze: the parameters are already validated.
+pub fn analyze_inputs(params: &[Parameter]) -> InputStats {
+    InputStats {
+        parameters: params.iter().map(definition_of).collect(),
+    }
+}
+
+/// One parameter's definition figures.
+fn definition_of(p: &Parameter) -> ParameterDefinition {
+    let (mean, sigma) = match p.distribution {
+        Distribution::Uniform => (None, None),
+        Distribution::Gaussian { mean, sigma } => (Some(mean), Some(sigma)),
+    };
+    // the scope defaults to (and is validated within) the definition
+    // range; only a narrower scope is reported
+    let full = p.scope_min == p.min && p.scope_max == p.max;
+    ParameterDefinition {
+        name: p.name.clone(),
+        distribution: p.distribution.name().to_owned(),
+        min: p.min,
+        max: p.max,
+        mean,
+        sigma,
+        scope: (!full).then_some((p.scope_min, p.scope_max)),
+        // `min < max` is validated by the parameter constructor
+        scope_fraction: (p.scope_max - p.scope_min) / (p.max - p.min),
+    }
+}
+
+/// Pearson and Spearman correlation between two result variables over
+/// the designs evaluated in both.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ResultPairCorrelation {
+    /// First result variable (alphabetical order).
+    pub a: String,
+    /// Second result variable.
+    pub b: String,
+    /// Number of designs evaluated in both variables.
+    pub n: usize,
+    /// Pearson correlation (`None` below 3 shared designs or without
+    /// variance — the same gates as everywhere in this crate).
+    pub pearson: Option<f64>,
+    /// Spearman correlation (`None` under the same gates).
+    pub spearman: Option<f64>,
+}
+
+/// Pair correlations between the result variables, plus the maxima of
+/// the absolute correlations (compact summary). With fewer than two
+/// result variables no pair exists: the list is empty and both maxima
+/// are `None`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ResultPairStats {
+    /// One entry per variable combination (`i < j`, alphabetical).
+    pub pairs: Vec<ResultPairCorrelation>,
+    /// Maximum `|pearson|` over all pairs with a defined correlation.
+    pub max_abs_pearson: Option<f64>,
+    /// Maximum `|spearman|` over all pairs with a defined correlation.
+    pub max_abs_spearman: Option<f64>,
+}
+
+/// Analyzes the pairwise correlation between the result variables:
+/// how the outputs relate to each other, over the intersection of the
+/// designs in which both are evaluated. The same validation as
+/// [`analyze`]: empty results, a name matching no design and results
+/// without any numeric values are rejected.
+pub fn analyze_result_pairs(designs: &[Design], results: &[Results]) -> Result<ResultPairStats> {
+    check_results(designs, results)?;
+    let entries: BTreeMap<&str, &Results> = results.iter().map(|r| (r.name.as_str(), r)).collect();
+    let variables = result_variables(results)?;
+    let mut pairs = Vec::new();
+    for (i, a) in variables.iter().enumerate() {
+        for b in &variables[i + 1..] {
+            // the shared series: designs evaluated in both variables,
+            // in pool design order
+            let mut xs = Vec::new();
+            let mut ys = Vec::new();
+            for design in designs {
+                if let Some(entry) = entries.get(design.name.as_str()) {
+                    if let (Some(&x), Some(&y)) = (entry.values.get(a), entry.values.get(b)) {
+                        xs.push(x);
+                        ys.push(y);
+                    }
+                }
+            }
+            let n = xs.len();
+            let pearson = correlate(&xs, &ys, n);
+            let spearman = correlate(&ranks(&xs), &ranks(&ys), n);
+            pairs.push(ResultPairCorrelation {
+                a: a.clone(),
+                b: b.clone(),
+                n,
+                pearson,
+                spearman,
+            });
+        }
+    }
+    Ok(ResultPairStats {
+        max_abs_pearson: max_abs(&pairs, |p| p.pearson),
+        max_abs_spearman: max_abs(&pairs, |p| p.spearman),
+        pairs,
+    })
+}
+
+/// Pearson/Spearman gate: `None` below 3 points or without variance.
+fn correlate(xs: &[f64], ys: &[f64], n: usize) -> Option<f64> {
+    if n < 3 || variance_is_zero(xs) || variance_is_zero(ys) {
+        return None;
+    }
+    Some(pearson(xs, ys))
+}
+
+/// Maximum of the absolute defined values; `None` when none is defined.
+fn max_abs<T, F>(pairs: &[T], value: F) -> Option<f64>
+where
+    F: Fn(&T) -> Option<f64>,
+{
+    pairs
+        .iter()
+        .filter_map(value)
+        .map(f64::abs)
+        .fold(None, |acc: Option<f64>, x| {
+            Some(acc.map_or(x, |m| m.max(x)))
+        })
+}
+
+/// Validates the results against the designs and returns the sorted
+/// result variable names. Shared by [`analyze`] and
+/// [`analyze_result_pairs`].
+fn check_results(designs: &[Design], results: &[Results]) -> Result<()> {
+    if results.is_empty() {
+        return Err(Error::Invalid("no results to analyze".to_owned()));
+    }
+    let index: BTreeSet<&str> = designs.iter().map(|d| d.name.as_str()).collect();
+    for r in results {
+        if !index.contains(r.name.as_str()) {
+            return Err(Error::Invalid(format!(
+                "result '{}' does not match any design",
+                r.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The sorted result variable names; fails when no numeric value exists.
+fn result_variables(results: &[Results]) -> Result<Vec<String>> {
+    let variables: Vec<&String> = results
+        .iter()
+        .flat_map(|r| r.values.keys())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if variables.is_empty() {
+        return Err(Error::Invalid(
+            "result entries contain no numeric values to analyze".to_owned(),
+        ));
+    }
+    Ok(variables.into_iter().cloned().collect())
 }
 
 /// Mean and sample standard deviation (n - 1 denominator; 0.0 for n < 2).
@@ -1283,5 +1481,173 @@ mod tests {
         let stats = analyze(&params, &designs, &results).unwrap();
         assert_eq!(stats[0].parameters[0].out_of_scope, None);
         assert_eq!(stats[0].parameters[0].in_scope.count, 3);
+    }
+
+    // ------------------------------------------------------------------
+    // input definitions
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn input_stats_report_definitions_and_scope_fractions() {
+        let x = Parameter::uniform("x", 0.0, 10.0)
+            .unwrap()
+            .with_scope(2.0, 8.0)
+            .unwrap();
+        let y = Parameter::gaussian("y", 0.0, 10.0, 5.0, 2.0).unwrap();
+        let input = analyze_inputs(&[x, y]);
+        assert_eq!(input.parameters.len(), 2);
+
+        let d = &input.parameters[0];
+        assert_eq!(d.name, "x");
+        assert_eq!(d.distribution, "uniform");
+        assert_eq!((d.min, d.max), (0.0, 10.0));
+        assert_eq!((d.mean, d.sigma), (None, None));
+        assert_eq!(d.scope, Some((2.0, 8.0)));
+        assert!((d.scope_fraction - 0.6).abs() < 1e-12);
+
+        let d = &input.parameters[1];
+        assert_eq!(d.distribution, "gaussian");
+        assert_eq!((d.mean, d.sigma), (Some(5.0), Some(2.0)));
+        // the scope defaults to the definition range: no scope, fraction 1
+        assert_eq!(d.scope, None);
+        assert_eq!(d.scope_fraction, 1.0);
+    }
+
+    #[test]
+    fn input_stats_of_an_empty_parameter_list_is_empty() {
+        assert!(analyze_inputs(&[]).parameters.is_empty());
+    }
+
+    // ------------------------------------------------------------------
+    // result pairs
+    // ------------------------------------------------------------------
+
+    /// A small pool: one parameter, four designs, two result variables
+    /// `a` and `b` with `b = 2a` where both are evaluated.
+    fn pair_pool() -> (Vec<Parameter>, Vec<Design>, Vec<Results>) {
+        let params = vec![param("x", 0.0, 10.0)];
+        let designs: Vec<Design> = [1.0, 2.0, 3.0, 4.0]
+            .iter()
+            .enumerate()
+            .map(|(i, &x)| Design {
+                name: format!("1.{}", i + 1),
+                values: vec![x],
+            })
+            .collect();
+        let results: Vec<Results> = [1.0, 2.0, 3.0, 4.0]
+            .iter()
+            .enumerate()
+            .map(|(i, &a)| Results {
+                name: format!("1.{}", i + 1),
+                values: BTreeMap::from([("a".to_owned(), a), ("b".to_owned(), 2.0 * a)]),
+            })
+            .collect();
+        (params, designs, results)
+    }
+
+    #[test]
+    fn result_pairs_correlate_two_variables_over_the_shared_designs() {
+        let (_, designs, results) = pair_pool();
+        let pairs = analyze_result_pairs(&designs, &results).unwrap();
+        assert_eq!(pairs.pairs.len(), 1);
+        let p = &pairs.pairs[0];
+        assert_eq!((p.a.as_str(), p.b.as_str()), ("a", "b"));
+        assert_eq!(p.n, 4);
+        // b = 2a: a perfectly linear (and monotonic) relation
+        assert!((p.pearson.unwrap() - 1.0).abs() < 1e-12);
+        assert!((p.spearman.unwrap() - 1.0).abs() < 1e-12);
+        assert!((pairs.max_abs_pearson.unwrap() - 1.0).abs() < 1e-12);
+        assert!((pairs.max_abs_spearman.unwrap() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn result_pairs_order_all_variable_combinations() {
+        let (_, designs, results) = pair_pool();
+        let mut results = results;
+        for r in &mut results {
+            r.values.insert("c".to_owned(), 3.0 * r.values["a"]);
+        }
+        let pairs = analyze_result_pairs(&designs, &results).unwrap();
+        let names: Vec<(String, String)> = pairs
+            .pairs
+            .iter()
+            .map(|p| (p.a.clone(), p.b.clone()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("a".to_owned(), "b".to_owned()),
+                ("a".to_owned(), "c".to_owned()),
+                ("b".to_owned(), "c".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn result_pairs_use_the_intersection_of_evaluated_designs() {
+        let (_, designs, mut results) = pair_pool();
+        // only two designs carry `b`: the shared series is those two
+        for r in results.iter_mut().skip(2) {
+            r.values.remove("b");
+        }
+        let pairs = analyze_result_pairs(&designs, &results).unwrap();
+        let p = &pairs.pairs[0];
+        assert_eq!(p.n, 2);
+        // below three shared designs the correlation is noise: n/a
+        assert_eq!(p.pearson, None);
+        assert_eq!(p.spearman, None);
+        assert_eq!(pairs.max_abs_pearson, None);
+        assert_eq!(pairs.max_abs_spearman, None);
+    }
+
+    #[test]
+    fn result_pairs_are_none_for_zero_variance() {
+        let (_, designs, mut results) = pair_pool();
+        for r in &mut results {
+            r.values.insert("b".to_owned(), 7.0);
+        }
+        let pairs = analyze_result_pairs(&designs, &results).unwrap();
+        let p = &pairs.pairs[0];
+        assert_eq!(p.n, 4);
+        assert_eq!(p.pearson, None);
+        assert_eq!(p.spearman, None);
+    }
+
+    #[test]
+    fn result_pairs_of_a_single_variable_yield_no_pairs() {
+        let (_, designs, mut results) = pair_pool();
+        for r in &mut results {
+            r.values.remove("b");
+        }
+        let pairs = analyze_result_pairs(&designs, &results).unwrap();
+        assert!(pairs.pairs.is_empty());
+        assert_eq!(pairs.max_abs_pearson, None);
+        assert_eq!(pairs.max_abs_spearman, None);
+    }
+
+    #[test]
+    fn result_pairs_reject_an_empty_result_list() {
+        let (_, designs, _) = pair_pool();
+        let err = analyze_result_pairs(&designs, &[]).unwrap_err();
+        assert!(err.to_string().contains("no results to analyze"));
+    }
+
+    #[test]
+    fn result_pairs_reject_an_unknown_result_name() {
+        let (_, designs, mut results) = pair_pool();
+        results[3].name = "9.9".to_owned();
+        let err = analyze_result_pairs(&designs, &results).unwrap_err();
+        assert!(err.to_string().contains("does not match any design"));
+    }
+
+    #[test]
+    fn result_pairs_reject_results_without_numeric_values() {
+        let (_, designs, _) = pair_pool();
+        let empty = Results {
+            name: "1.1".to_owned(),
+            values: BTreeMap::new(),
+        };
+        let err = analyze_result_pairs(&designs, &[empty]).unwrap_err();
+        assert!(err.to_string().contains("no numeric values"));
     }
 }

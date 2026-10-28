@@ -1,0 +1,17 @@
+input parameters:
+  x: uniform, range [0, 10], scope [2, 8] (60.0% of range)
+  y: gaussian, range [0, 10], mean 5, sigma 2, scope: full range
+pool: 4 designs, 4 evaluated, 2 parameters (2 designs per parameter)
+sampling points:
+  min pairwise distance: 0.212132
+  mean pairwise distance: 0.358069
+  median pairwise distance: 0.326862
+  mean nearest neighbor: 0.212132
+  discrepancy (CL2): 0.344545
+  pooled pair r2: 0.981744
+  empty decile slots: 12 of 20
+  pairs: 1, max |pearson| 0.990830, max |spearman| 1.000000
+outputs:
+a: n=4, min 1.000000, max 4.000000, mean 2.500000, median 2.500000, std 1.290994
+b: n=4, min 2.000000, max 8.000000, mean 5.000000, median 5.000000, std 2.581989
+output pairs: 1, max |pearson| 1.000000, max |spearman| 1.000000

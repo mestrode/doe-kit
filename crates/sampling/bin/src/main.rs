@@ -12,14 +12,18 @@
 //! overwrite an existing file.
 //!
 //! `sampling stats` analyzes the pool (read-only judgment support before
-//! expensive simulations are run): statistics of the sampling points
-//! themselves — space-filling metrics in the unit cube (min/mean/median
-//! pairwise distance, mean nearest-neighbor distance, centered L2
-//! discrepancy, the pooled pair r2 that plhs optimizes) plus the
-//! occupancy and pair summaries — and, when results exist, one summary
-//! line per result variable. `--verbose` switches to the full tier:
+//! expensive simulations are run): the full report of the `doe-stats`
+//! binary — the parameter definitions, then the statistics of the
+//! sampling points themselves — space-filling metrics in the unit cube
+//! (min/mean/median pairwise distance, mean nearest-neighbor distance,
+//! centered L2 discrepancy, the pooled pair r2 that plhs optimizes) plus
+//! the occupancy and pair summaries — then one summary line per result
+//! variable and the pairs between the result variables. The sections
+//! run in order and the first failing one ends the run (a pool without
+//! designs fails at the sampling section, a pool without results at
+//! the output section). `--verbose` switches to the full tier:
 //! per-parameter descriptive statistics, decile coverage and
-//! outer-decile counts, the complete pair list and the per-parameter
+//! outer-decile counts, the complete pair lists and the per-parameter
 //! result blocks.
 //!
 //! Every subcommand that produces a result accepts `--json`: one line of
@@ -57,9 +61,10 @@ enum Command {
     /// low-correlation designs, scoped (--add) or whole-surface (--explore)
     #[command(name = "plhs")]
     Plhs(PlhsArgs),
-    /// Statistical analysis of the pool: sampling-point statistics plus,
-    /// when results exist, per-result coverage, correlations, scope
-    /// split and decile means (read-only)
+    /// Full statistics report of the pool: parameter definitions,
+    /// sampling points and evaluated results (read-only; the
+    /// `doe-stats` binary is the stats front-end, this subcommand is
+    /// the transitional wrapper)
     #[command(name = "stats")]
     Stats(StatsArgs),
 }
@@ -285,209 +290,40 @@ fn run(args: &PlhsArgs) -> Result<String, CliError> {
     Ok(summary)
 }
 
-/// Analyzes the pool and formats the statistics report: statistics of the
-/// sampling points themselves, plus the evaluated results when any exist.
-/// Read-only: no files are written.
+/// Analyzes the pool and formats the full statistics report (the same
+/// report as bare `doe-stats`): the parameter definitions, then the
+/// sampling points, then the evaluated results. The sections run in
+/// order and the first failing one ends the run. Read-only: no files
+/// are written.
 fn run_stats(args: &StatsArgs) -> Result<String, CliError> {
     let (_, root) = doe_pool::read(&args.file).map_err(pool)?;
     let params = doe_pool::format::parse_params(&root).map_err(validation)?;
     let designs = doe_pool::format::parse_designs(&root, &params).map_err(validation)?;
     let results = doe_pool::format::parse_results(&root).map_err(validation)?;
-    // results first: a result name matching no design keeps failing
-    // exactly as before; the sampling points are reported on top
-    let stats = if results.is_empty() {
-        Vec::new()
-    } else {
-        doe_stats::analyze(&params, &designs, &results).map_err(validation)?
-    };
+    // input section (definitions cannot fail), then the sampling
+    // section (needs designs), then the output section (needs results)
+    let input = doe_stats::analyze_inputs(&params);
     let pool = doe_stats::analyze_pool(&params, &designs).map_err(validation)?;
-    if args.json {
-        let mut pool_v = serde_json::to_value(&pool)
-            .map_err(|e| validation(plhs::Error::Invalid(e.to_string())))?;
-        let mut results_v = serde_json::to_value(&stats)
-            .map_err(|e| validation(plhs::Error::Invalid(e.to_string())))?;
-        if !args.verbose {
-            // compact tier: global metrics and summary fields only —
-            // the per-parameter details and the pair list are dropped
-            let n_pairs = pool_v["pairs"].as_array().map_or(0, Vec::len);
-            let obj = pool_v
-                .as_object_mut()
-                .expect("PoolStats serializes to an object");
-            obj.remove("parameters");
-            obj.remove("pairs");
-            obj.insert("n_pairs".to_owned(), serde_json::json!(n_pairs));
-            if let Some(results) = results_v.as_array_mut() {
-                for entry in results {
-                    entry
-                        .as_object_mut()
-                        .expect("VariableStats serializes to an object")
-                        .remove("parameters");
-                }
-            }
-        }
-        let report = serde_json::json!({
-            "subcommand": "stats",
-            "file": args.file.display().to_string(),
-            "evaluated": results.len(),
-            "pool": pool_v,
-            "results": results_v,
-        });
-        return Ok(report.to_string());
+    if results.is_empty() {
+        return Err(CliError::Validation("no results to analyze".to_owned()));
     }
-    Ok(format_stats_report(
-        &pool,
-        &stats,
-        results.len(),
-        args.verbose,
-    ))
-}
-
-/// Formats `n / k` as a context number: an integer when it divides
-/// evenly, one decimal otherwise.
-fn designs_per_parameter(designs: usize, parameters: usize) -> String {
-    if parameters == 0 {
-        return "0".to_owned();
-    }
-    if designs % parameters == 0 {
-        format!("{}", designs / parameters)
-    } else {
-        format!("{:.1}", designs as f64 / parameters as f64)
-    }
-}
-
-/// Formats the statistics as a human-readable report: one block for the
-/// sampling points, then one block per result variable. Statistics only,
-/// the judgment stays with the reader. The default is the compact tier
-/// (global metrics and summary lines); `verbose` adds the per-parameter
-/// descriptive statistics and decile counts, the complete pair list and
-/// the per-parameter blocks of the result variables.
-fn format_stats_report(
-    pool: &doe_stats::PoolStats,
-    stats: &[doe_stats::VariableStats],
-    evaluated: usize,
-    verbose: bool,
-) -> String {
-    let mut out = String::new();
-    let parameters = pool.parameters.len();
-    out.push_str(&format!(
-        "pool: {} designs, {evaluated} evaluated, {parameters} parameters ({} designs per parameter)\n",
-        pool.total,
-        designs_per_parameter(pool.total, parameters)
-    ));
-    out.push_str("sampling points:\n");
-    if verbose {
-        for p in &pool.parameters {
-            out.push_str(&format!(
-                "  {}: n={}, min {:.6}, max {:.6}, mean {:.6}, median {:.6}, std {:.6}\n",
-                p.name, p.n, p.min, p.max, p.mean, p.median, p.std
-            ));
-            let deciles: Vec<String> = p.deciles.iter().map(|c| c.to_string()).collect();
-            out.push_str(&format!(
-                "     decile counts: [{}], outer deciles: {}\n",
-                deciles.join(", "),
-                p.outer_deciles
-            ));
-        }
-    }
-    match pool.min_pairwise_distance {
-        Some(d) => out.push_str(&format!("  min pairwise distance: {d:.6}\n")),
-        None => out.push_str("  min pairwise distance: n/a (single design)\n"),
-    }
-    match pool.mean_pairwise_distance {
-        Some(d) => out.push_str(&format!("  mean pairwise distance: {d:.6}\n")),
-        None => out.push_str("  mean pairwise distance: n/a (single design)\n"),
-    }
-    match pool.median_pairwise_distance {
-        Some(d) => out.push_str(&format!("  median pairwise distance: {d:.6}\n")),
-        None => out.push_str("  median pairwise distance: n/a (single design)\n"),
-    }
-    match pool.mean_nearest_neighbor {
-        Some(d) => out.push_str(&format!("  mean nearest neighbor: {d:.6}\n")),
-        None => out.push_str("  mean nearest neighbor: n/a (single design)\n"),
-    }
-    out.push_str(&format!(
-        "  discrepancy (CL2): {:.6}\n",
-        pool.discrepancy_cl2
-    ));
-    match pool.pooled_pair_r2 {
-        Some(s) => out.push_str(&format!("  pooled pair r2: {s:.6}\n")),
-        None => out.push_str("  pooled pair r2: n/a (n < 3, single parameter or no variance)\n"),
-    }
-    // compact occupancy and pair summaries — readable in the default
-    // tier, where the per-parameter decile counts and the pair list
-    // are not shown
-    out.push_str(&format!(
-        "  empty decile slots: {} of {}\n",
-        pool.empty_decile_slots,
-        parameters * doe_stats::DECILES
-    ));
-    let max_of = |v: Option<f64>| match v {
-        Some(x) => format!("{x:.6}"),
-        None => "n/a".to_owned(),
+    let stats = doe_stats::analyze(&params, &designs, &results).map_err(validation)?;
+    let pairs = doe_stats::analyze_result_pairs(&designs, &results).map_err(validation)?;
+    let data = doe_stats_bin::ReportData {
+        input: &input,
+        pool: &pool,
+        results: &stats,
+        pairs: &pairs,
+        evaluated: results.len(),
     };
-    out.push_str(&format!(
-        "  pairs: {}, max |pearson| {}, max |spearman| {}\n",
-        pool.pairs.len(),
-        max_of(pool.max_abs_pearson),
-        max_of(pool.max_abs_spearman)
-    ));
-    if verbose {
-        for pair in &pool.pairs {
-            match (pair.pearson, pair.spearman) {
-                (Some(pe), Some(se)) => out.push_str(&format!(
-                    "  {} vs {}: pearson {pe:.6}, spearman {se:.6}\n",
-                    pair.a, pair.b
-                )),
-                _ => out.push_str(&format!(
-                    "  {} vs {}: pearson n/a, spearman n/a (n < 3 or no variance)\n",
-                    pair.a, pair.b
-                )),
-            }
-        }
+    if args.json {
+        return doe_stats_bin::json_report(
+            "stats",
+            &args.file.display().to_string(),
+            &data,
+            args.verbose,
+        )
+        .map_err(|e| validation(plhs::Error::Invalid(e.to_string())));
     }
-    for v in stats {
-        out.push_str(&format!(
-            "{}: n={}, min {:.6}, max {:.6}, mean {:.6}, median {:.6}, std {:.6}\n",
-            v.name, v.n, v.min, v.max, v.mean, v.median, v.std
-        ));
-        if verbose {
-            for p in &v.parameters {
-                match (p.pearson, p.spearman) {
-                    (Some(pe), Some(se)) => {
-                        out.push_str(&format!(
-                            "  {}: pearson {pe:.6}, spearman {se:.6}\n",
-                            p.name
-                        ));
-                    }
-                    _ => {
-                        out.push_str(&format!(
-                            "  {}: pearson n/a, spearman n/a (n < 3 or no variance)\n",
-                            p.name
-                        ));
-                    }
-                }
-                out.push_str(&format!(
-                    "     in scope: {} evaluated, mean {:.6}, std {:.6}\n",
-                    p.in_scope.count, p.in_scope.mean, p.in_scope.std
-                ));
-                match &p.out_of_scope {
-                    Some(o) => out.push_str(&format!(
-                        "     outside scope: {} evaluated, mean {:.6}, std {:.6}\n",
-                        o.count, o.mean, o.std
-                    )),
-                    None => out.push_str("     outside scope: none evaluated\n"),
-                }
-                let deciles: Vec<String> = p
-                    .deciles
-                    .iter()
-                    .map(|d| match d.mean {
-                        Some(m) => format!("{m:.6}"),
-                        None => "-".to_owned(),
-                    })
-                    .collect();
-                out.push_str(&format!("     deciles: [{}]\n", deciles.join(", ")));
-            }
-        }
-    }
-    out.trim_end().to_owned()
+    Ok(doe_stats_bin::human_report(&data, args.verbose))
 }

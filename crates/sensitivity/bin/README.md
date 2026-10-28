@@ -1,0 +1,92 @@
+# doe-stats-bin
+
+The `doe-stats` command-line tool and its presentation library:
+the human-readable report and the machine-readable JSON line for
+Design of Experiments pool statistics. The binary is statistics-only —
+it reads a pool, prints statistics, never writes. The computations live
+in the pure `doe-stats` lib crate (`crates/sensitivity/stats`); this
+crate only formats.
+
+The package is named `doe-stats-bin` because the lib crate `doe-stats`
+owns the name inside the workspace. The binary itself is called
+`doe-stats`.
+
+## Usage
+
+```sh
+doe-stats designs.json          # the full report: all three sections
+doe-stats input designs.json    # the parameter definitions only
+doe-stats sampling designs.json # the sampling-point statistics only
+doe-stats output designs.json   # the evaluated-result statistics only
+```
+
+Bare `doe-stats <file>` prints the full report — the same output as
+`sampling stats`. The sections run in order (input, sampling, output)
+and the first one that cannot run ends the run with a validation error
+(exit 1):
+
+- `input` needs only the definitions and works on a fresh pool (no
+  designs, no results).
+- `sampling` needs at least one design; a result name that matches no
+  design is only an error where results are read (output, bare).
+- `output` needs at least one evaluated result.
+
+So a fresh pool fails at the sampling section, a designed-but-unevaluated
+pool at the output section — with the subcommands you can inspect the
+sections that do run.
+
+Flags: `--json` (one machine-readable line on stdout, human output
+suppressed; `--verbose` widens it to the full tier) and `--verbose`
+(the full human detail tier; the default is compact). Exit codes: 0
+success, 1 validation error, 2 usage or I/O error. The input file is
+read-only; no backups, no writes, no `--no-backup`.
+
+## The sections
+
+Input (works on a fresh pool): one line per parameter — distribution,
+range, mean and sigma for gaussian, and the scope with its share of the
+range; a full-range scope is not restated.
+
+```text
+input parameters:
+  x: uniform, range [0, 10], scope [2, 8] (60.0% of range)
+  y: gaussian, range [0, 10], mean 5, sigma 2, scope: full range
+```
+
+Sampling (verbatim the `sampling stats` sampling-points block): the
+pool line with total, evaluated count and designs per parameter, the
+space-filling metrics (pairwise distances, nearest neighbor), the CL2
+discrepancy, the pooled pair r2, decile occupancy, and the parameter
+pair summary; `--verbose` adds per-parameter descriptive statistics,
+decile counts and every parameter pair. Requires at least one design.
+
+Output (verbatim the `sampling stats` results block) plus the
+output↔output correlations: every pair of result variables gets a
+Pearson and Spearman correlation over the designs evaluated in both
+(n/a below 3 shared designs or without variance; with fewer than two
+result variables the pairs block is omitted).
+
+```text
+outputs:
+a: n=4, min 1.000000, max 4.000000, mean 2.500000, median 2.500000, std 1.290994
+b: n=4, min 2.000000, max 8.000000, mean 5.000000, median 5.000000, std 2.581989
+output pairs: 1, max |pearson| 1.000000, max |spearman| 1.000000
+```
+
+`--verbose` prints the per-parameter detail of each result and every
+output pair:
+
+```text
+  a vs b: pearson 1.000000, spearman 1.000000 (n 4)
+```
+
+## JSON
+
+`--json` prints exactly one line: `subcommand` (`input`, `sampling`,
+`output`, or `all` for the bare full report — the `sampling stats`
+wrapper keeps its `stats` label), `file`, `evaluated`, and the section
+objects `input` (single tier: the parameter definitions with their
+scope fractions), `pool`, `results` and `output_pairs`. The latter
+three follow the tiering: the default is the compact object (the pool
+and the output pairs carry `n_pairs` instead of their detail lists),
+`--json --verbose` the full one.
