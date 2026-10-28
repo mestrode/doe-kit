@@ -11,6 +11,12 @@
 //! (three example parameters `a`, `b`, `c`, no designs) and refuses to
 //! overwrite an existing file.
 //!
+//! `sampling reset` removes designs from the pool: every design without
+//! a results entry (the unevaluated ones), or — with `--all` — every
+//! design together with the whole `results` array, returning the pool
+//! to its initial state. The parameters are untouched and the next
+//! `plhs` run starts at iteration 1 again.
+//!
 //! `sampling stats` analyzes the pool (read-only judgment support before
 //! expensive simulations are run): the full report of the `doe-stats`
 //! binary — the parameter definitions, then the statistics of the
@@ -67,6 +73,10 @@ enum Command {
     /// the transitional wrapper)
     #[command(name = "stats")]
     Stats(StatsArgs),
+    /// Remove designs from the pool: all without a results entry
+    /// (default) or every design together with the results (--all)
+    #[command(name = "reset")]
+    Reset(ResetArgs),
 }
 
 #[derive(Args)]
@@ -126,12 +136,31 @@ struct StatsArgs {
     verbose: bool,
 }
 
+#[derive(Args)]
+struct ResetArgs {
+    /// Input JSON file; also the output file.
+    file: PathBuf,
+    /// Remove every design together with the whole results array,
+    /// returning the pool to its initial state (params only, empty
+    /// `designs`, the next augmentation starts at iteration 1 again).
+    #[arg(long)]
+    all: bool,
+    /// Skip writing the backup file.
+    #[arg(long)]
+    no_backup: bool,
+    /// Print one line of machine-readable JSON instead of the human
+    /// summary (for benchmarks and result collection).
+    #[arg(long)]
+    json: bool,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Init(args) => run_init(&args),
         Command::Plhs(args) => run(&args),
         Command::Stats(args) => run_stats(&args),
+        Command::Reset(args) => run_reset(&args),
     };
     match result {
         Ok(summary) => {
@@ -326,4 +355,49 @@ fn run_stats(args: &StatsArgs) -> Result<String, CliError> {
         .map_err(|e| validation(plhs::Error::Invalid(e.to_string())));
     }
     Ok(doe_stats_bin::human_report(&data, args.verbose))
+}
+
+/// Removes designs from the pool: every design without a results entry,
+/// or — with `--all` — every design together with the whole `results`
+/// array. The parameters are untouched; the pool is written back with
+/// the usual `.bak` backup. Removing nothing succeeds (idempotent).
+fn run_reset(args: &ResetArgs) -> Result<String, CliError> {
+    let (bytes, mut root) = doe_pool::read(&args.file).map_err(pool)?;
+    // validate the pool first so structurally invalid files fail before
+    // anything is removed
+    let params = doe_pool::format::parse_params(&root).map_err(validation)?;
+    let _designs = doe_pool::format::parse_designs(&root, &params).map_err(validation)?;
+    let report = doe_pool::format::reset_designs(&mut root, args.all).map_err(validation)?;
+
+    if !args.no_backup {
+        doe_pool::backup(&args.file, &bytes).map_err(pool)?;
+    }
+    let out_bytes = doe_pool::serialize(&root).map_err(pool)?;
+    doe_pool::write_atomic(&args.file, &out_bytes).map_err(pool)?;
+
+    if args.json {
+        return Ok(serde_json::json!({
+            "subcommand": "reset",
+            "mode": if args.all { "all" } else { "unevaluated" },
+            "file": args.file.display().to_string(),
+            "designs_before": report.designs_before,
+            "designs_after": report.designs_after,
+            "results_before": report.results_before,
+            "results_after": report.results_after,
+        })
+        .to_string());
+    }
+
+    if args.all {
+        return Ok(format!(
+            "removed all {} designs and {} results",
+            report.designs_before, report.results_before
+        ));
+    }
+    Ok(format!(
+        "removed {} designs ({} kept, {} results)",
+        report.designs_before - report.designs_after,
+        report.designs_after,
+        report.results_before
+    ))
 }
