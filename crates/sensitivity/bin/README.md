@@ -1,11 +1,12 @@
 # doe-stats-bin
 
 The `doe-stats` command-line tool and its presentation library:
-the human-readable report and the machine-readable JSON line for
-Design of Experiments pool statistics. The binary is statistics-only —
-it reads a pool, prints statistics, never writes. The computations live
-in the pure `doe-stats` lib crate (`crates/sensitivity/stats`); this
-crate only formats.
+the human-readable report, the machine-readable JSON line and the
+interactive HTML report for Design of Experiments pool statistics.
+The binary is statistics-only — it reads a pool, prints statistics and
+never modifies the pool; the only file it writes is the HTML report
+with `--html`. The computations live in the pure `doe-stats` lib crate
+(`crates/sensitivity/stats`); this crate only formats.
 
 The package is named `doe-stats-bin` because the lib crate `doe-stats`
 owns the name inside the workspace. The binary itself is called
@@ -18,6 +19,7 @@ doe-stats designs.json          # the full report: all three sections
 doe-stats input designs.json    # the parameter definitions only
 doe-stats sampling designs.json # the sampling-point statistics only
 doe-stats output designs.json   # the evaluated-result statistics only
+doe-stats --html designs.json   # the interactive report (see below)
 ```
 
 Bare `doe-stats <file>` prints the full report — the same output as
@@ -36,10 +38,36 @@ pool at the output section — with the subcommands you can inspect the
 sections that do run.
 
 Flags: `--json` (one machine-readable line on stdout, human output
-suppressed; `--verbose` widens it to the full tier) and `--verbose`
-(the full human detail tier; the default is compact). Exit codes: 0
-success, 1 validation error, 2 usage or I/O error. The input file is
-read-only; no backups, no writes, no `--no-backup`.
+suppressed; `--verbose` widens it to the full tier), `--verbose` (the
+full human detail tier; the default is compact) and `--html` (the
+interactive report file, see below). Exit codes: 0 success, 1
+validation error, 2 usage or I/O error. The pool file itself is
+read-only: no backups, no modification, no `--no-backup`.
+
+## The HTML report
+
+`--html` writes the interactive single-file report to
+`<stem>-report.html` next to the pool (`pool.json` →
+`pool-report.html`; inner dots stay, `my.pool.json` →
+`my.pool-report.html`), silently overwriting an existing file. The
+human output is replaced by a one-liner `wrote '<file>'`; a write
+failure is an I/O error (exit 2). With `--json --html` both outputs
+are produced: the machine line on stdout, the report file additionally
+(the `wrote` line is suppressed so stdout stays exactly one JSON
+line). `--verbose` has no effect — the HTML report always embeds the
+full tier.
+
+Every view supports it: the bare invocation reports all three
+sections, the subcommands their own section only. The page is
+mobile-first with tabs, per-parameter definition cards (uniform
+range/scope bars, the Gaussian pdf with lost-probability shading), one
+sticky chart per matrix section with next/prior buttons, clickable
+correlation matrices (values in low dimensions) and the complete
+statistics as tables. Charts use Plotly.js from a CDN: the page needs
+internet for diagrams, while the statistics and tables render fully
+offline. The embedded payload is the full JSON tier plus the raw
+per-design values the diagrams plot; the JavaScript renders and never
+computes statistics.
 
 ## The sections
 

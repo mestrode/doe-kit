@@ -30,9 +30,14 @@
 //! Every view accepts `--json` (one line of machine-readable JSON on
 //! stdout instead of the human report) and `--verbose` (the full
 //! detail tier instead of the compact one — no effect on the input
-//! section, which is always printed in full). Errors stay human on
-//! stderr with the usual exit codes: 0 success, 1 validation error,
-//! 2 I/O error.
+//! section, which is always printed in full), plus `--html`: instead
+//! of the human report (in addition to `--json` when both are given)
+//! the interactive single-file report is written to
+//! `<stem>-report.html` next to the pool (pool.json →
+//! pool-report.html, silently overwritten). `--verbose` has no
+//! effect on the HTML report — it always embeds the full tier. Errors
+//! stay human on stderr with the usual exit codes: 0 success, 1
+//! validation error, 2 I/O error.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -53,8 +58,14 @@ struct Cli {
     /// report (for benchmarks and result collection).
     #[arg(long)]
     json: bool,
+    /// Write the interactive HTML report to <stem>-report.html next to
+    /// the pool instead of printing the human report (additionally to
+    /// the JSON line when --json is also given; silently overwritten).
+    #[arg(long)]
+    html: bool,
     /// Switch to the full detail tier; no effect on the input section
-    /// (definitions are always printed in full).
+    /// (definitions are always printed in full) and on the HTML report
+    /// (it always embeds the full tier).
     #[arg(long)]
     verbose: bool,
     #[command(subcommand)]
@@ -86,6 +97,11 @@ struct ViewArgs {
     /// report (for benchmarks and result collection).
     #[arg(long)]
     json: bool,
+    /// Write the interactive HTML report to <stem>-report.html next to
+    /// the pool instead of printing the human report (additionally to
+    /// the JSON line when --json is also given; silently overwritten).
+    #[arg(long)]
+    html: bool,
     /// Switch to the full detail tier; no effect on the input section.
     #[arg(long)]
     verbose: bool,
@@ -98,7 +114,7 @@ fn main() -> ExitCode {
         Some(Command::Sampling(args)) => run_sampling(&args),
         Some(Command::Output(args)) => run_output(&args),
         None => match cli.file {
-            Some(file) => run_all(&file, cli.json, cli.verbose),
+            Some(file) => run_all(&file, cli.json, cli.verbose, cli.html),
             None => {
                 eprintln!("error: a pool file is required (see 'doe-stats --help' for usage)");
                 return ExitCode::from(2);
@@ -161,6 +177,28 @@ fn file_str(path: &std::path::Path) -> String {
     path.display().to_string()
 }
 
+/// The HTML report path: `<stem>-report.html` next to the pool
+/// (pool.json → pool-report.html; the stem keeps inner dots,
+/// my.pool.json → my.pool-report.html).
+fn report_path(file: &Path) -> PathBuf {
+    let mut name = file
+        .file_stem()
+        .map_or_else(|| file.as_os_str().to_owned(), |s| s.to_owned())
+        .to_owned();
+    name.push("-report.html");
+    file.with_file_name(name)
+}
+
+/// Renders the HTML report and writes it next to the pool, silently
+/// overwriting an existing file; returns the human one-liner naming
+/// the written path. Write failures are I/O errors (exit 2).
+fn write_report(file: &Path, html: Result<String, serde_json::Error>) -> Result<String, CliError> {
+    let html = html.map_err(json)?;
+    let target = report_path(file);
+    std::fs::write(&target, html).map_err(CliError::Io)?;
+    Ok(format!("wrote '{}'", target.display()))
+}
+
 /// Input view: the parameter definitions only. Needs neither designs
 /// nor results; result entries are not read and not validated.
 fn run_input(args: &ViewArgs) -> Result<String, CliError> {
@@ -168,7 +206,21 @@ fn run_input(args: &ViewArgs) -> Result<String, CliError> {
     let params = doe_pool::format::parse_params(&root).map_err(validation)?;
     let input = doe_stats::analyze_inputs(&params);
     if args.json {
-        return doe_stats_bin::json_input("input", &file_str(&args.file), &input).map_err(json);
+        let report =
+            doe_stats_bin::json_input("input", &file_str(&args.file), &input).map_err(json)?;
+        if args.html {
+            write_report(
+                &args.file,
+                doe_stats_bin::html_input(&file_str(&args.file), &input),
+            )?;
+        }
+        return Ok(report);
+    }
+    if args.html {
+        return write_report(
+            &args.file,
+            doe_stats_bin::html_input(&file_str(&args.file), &input),
+        );
     }
     Ok(doe_stats_bin::human_input(&input, args.verbose)
         .trim_end()
@@ -185,14 +237,39 @@ fn run_sampling(args: &ViewArgs) -> Result<String, CliError> {
     let results = doe_pool::format::parse_results(&root).map_err(validation)?;
     let pool = doe_stats::analyze_pool(&params, &designs).map_err(validation)?;
     if args.json {
-        return doe_stats_bin::json_sampling(
+        let report = doe_stats_bin::json_sampling(
             "sampling",
             &file_str(&args.file),
             results.len(),
             &pool,
             args.verbose,
         )
-        .map_err(json);
+        .map_err(json)?;
+        if args.html {
+            write_report(
+                &args.file,
+                doe_stats_bin::html_sampling(
+                    &file_str(&args.file),
+                    results.len(),
+                    &pool,
+                    &params,
+                    &designs,
+                ),
+            )?;
+        }
+        return Ok(report);
+    }
+    if args.html {
+        return write_report(
+            &args.file,
+            doe_stats_bin::html_sampling(
+                &file_str(&args.file),
+                results.len(),
+                &pool,
+                &params,
+                &designs,
+            ),
+        );
     }
     Ok(
         doe_stats_bin::human_sampling(&pool, results.len(), args.verbose)
@@ -211,7 +288,7 @@ fn run_output(args: &ViewArgs) -> Result<String, CliError> {
     let results = doe_pool::format::parse_results(&root).map_err(validation)?;
     let (stats, pairs) = analyze_results(&params, &designs, &results)?;
     if args.json {
-        return doe_stats_bin::json_output(
+        let report = doe_stats_bin::json_output(
             "output",
             &file_str(&args.file),
             results.len(),
@@ -219,7 +296,36 @@ fn run_output(args: &ViewArgs) -> Result<String, CliError> {
             &pairs,
             args.verbose,
         )
-        .map_err(json);
+        .map_err(json)?;
+        if args.html {
+            write_report(
+                &args.file,
+                doe_stats_bin::html_output(
+                    &file_str(&args.file),
+                    results.len(),
+                    &stats,
+                    &pairs,
+                    &params,
+                    &designs,
+                    &results,
+                ),
+            )?;
+        }
+        return Ok(report);
+    }
+    if args.html {
+        return write_report(
+            &args.file,
+            doe_stats_bin::html_output(
+                &file_str(&args.file),
+                results.len(),
+                &stats,
+                &pairs,
+                &params,
+                &designs,
+                &results,
+            ),
+        );
     }
     Ok(doe_stats_bin::human_output(&stats, &pairs, args.verbose)
         .trim_end()
@@ -230,7 +336,7 @@ fn run_output(args: &ViewArgs) -> Result<String, CliError> {
 /// and the first failing one ends the run — a fresh pool fails at the
 /// sampling section, a design-less-but-evaluated pool at the output
 /// section.
-fn run_all(file: &Path, json_flag: bool, verbose: bool) -> Result<String, CliError> {
+fn run_all(file: &Path, json_flag: bool, verbose: bool, html: bool) -> Result<String, CliError> {
     let (_, root) = doe_pool::read(file).map_err(pool)?;
     let params = doe_pool::format::parse_params(&root).map_err(validation)?;
     let designs = doe_pool::format::parse_designs(&root, &params).map_err(validation)?;
@@ -251,7 +357,21 @@ fn run_all(file: &Path, json_flag: bool, verbose: bool) -> Result<String, CliErr
     };
 
     if json_flag {
-        return doe_stats_bin::json_report("all", &file_str(file), &data, verbose).map_err(json);
+        let report =
+            doe_stats_bin::json_report("all", &file_str(file), &data, verbose).map_err(json)?;
+        if html {
+            write_report(
+                file,
+                doe_stats_bin::html_report(&file_str(file), &data, &params, &designs, &results),
+            )?;
+        }
+        return Ok(report);
+    }
+    if html {
+        return write_report(
+            file,
+            doe_stats_bin::html_report(&file_str(file), &data, &params, &designs, &results),
+        );
     }
     Ok(doe_stats_bin::human_report(&data, verbose))
 }

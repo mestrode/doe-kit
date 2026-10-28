@@ -74,9 +74,10 @@ cadence; publication to crates.io is manual and per crate.
   results are read.
 - The `doe-stats` CLI contract: `doe-stats input|sampling|output file`
   plus the bare `doe-stats file` for the full report; statistics-only,
-  read-only (no backups, no `--no-backup`), flags `--json`/`--verbose`
-  only, exit codes 0 success / 1 validation error / 2 usage or I/O
-  error, unknown subcommand is a usage error. Keep these stable.
+  the pool file itself is read-only (no backups, no `--no-backup`),
+  flags `--json`/`--verbose`/`--html`, exit codes 0 success / 1
+  validation error / 2 usage or I/O error, unknown subcommand is a
+  usage error. Keep these stable.
 - The input section is two-tier for Gaussian parameters: the compact
   tier warns when the untruncated mass outside the scope exceeds 10%
   (strictly above; the scope is the sampling interval), `--verbose`
@@ -102,6 +103,15 @@ cadence; publication to crates.io is manual and per crate.
   tier; the default output is compact. Subcommands with detail depth
   get this flag, and `--json` follows the same tiering: the default is
   the compact object, `--json --verbose` the full one.
+- `--html` on a view writes the interactive single-file report to
+  `<stem>-report.html` next to the input file (silently overwritten;
+  write failure is an I/O error, exit 2). Combinable with `--json`:
+  the machine line stays the only stdout, the report file is written
+  additionally. `--verbose` has no effect — the HTML report always
+  embeds the full tier. The embedded JavaScript renders only; every
+  displayed statistic is computed in Rust. Charts use Plotly.js from
+  a CDN, so diagram rendering needs internet; the statistics and
+  tables render offline.
 - Input files are backed up to `<file>.bak` unless `--no-backup` is given.
 - Pool files are read, parsed and written through the `doe-pool` crate; do
   not reimplement pool file handling in another crate or binary.
