@@ -687,3 +687,152 @@ fn missing_file_is_an_io_error() {
     assert!(!dir.join("absent.json").exists());
     fs::remove_dir_all(&dir).ok();
 }
+
+// ---------------------------------------------------------------------
+// --html: the interactive report file
+// ---------------------------------------------------------------------
+
+#[test]
+fn html_writes_the_full_report_next_to_the_pool() {
+    let dir = temp_dir("html-bare");
+    write_fixture(&dir, "pool.json");
+
+    let (out, stdout) = run(&dir, &["--html", "pool.json"]);
+    assert!(out.status.success(), "stderr: {}", stderr_of(&out));
+    assert_eq!(stdout, "wrote 'pool-report.html'\n", "stdout: {stdout}");
+
+    // the written page is the byte-pinned golden report of PR #43's
+    // library test (same fixture pool, same file label "pool.json")
+    let report = fs::read_to_string(dir.join("pool-report.html")).unwrap();
+    let expected = fs::read_to_string("tests/fixtures/expected_report.html").unwrap();
+    assert_eq!(report, expected);
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn html_writes_the_view_reports() {
+    let dir = temp_dir("html-views");
+    write_fixture(&dir, "pool.json");
+
+    for view in ["input", "sampling", "output"] {
+        let (out, stdout) = run(&dir, &[view, "--html", "pool.json"]);
+        assert!(out.status.success(), "stderr: {}", stderr_of(&out));
+        assert_eq!(stdout, "wrote 'pool-report.html'\n", "stdout: {stdout}");
+        let report = fs::read_to_string(dir.join("pool-report.html")).unwrap();
+        assert!(report.starts_with("<!DOCTYPE html>"), "view: {view}");
+        assert!(
+            report.contains(&format!("\"subcommand\":\"{view}\"")),
+            "view {view} must embed its own label"
+        );
+    }
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn html_keeps_validation_unchanged() {
+    let dir = temp_dir("html-noresults");
+    let file = dir.join("pool.json");
+    let mut root: Value = serde_json::from_str(&fixture()).unwrap();
+    root["results"] = Value::Array(vec![]);
+    fs::write(&file, serde_json::to_string(&root).unwrap()).unwrap();
+
+    // the full report and the output view fail before anything is written
+    for args in [
+        vec!["--html", "pool.json"],
+        vec!["output", "--html", "pool.json"],
+    ] {
+        let (out, _) = run(&dir, &args);
+        assert_eq!(out.status.code(), Some(1), "args: {args:?}");
+        assert!(!dir.join("pool-report.html").exists(), "no file on failure");
+    }
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn html_json_writes_both_outputs() {
+    let dir = temp_dir("html-json");
+    write_fixture(&dir, "pool.json");
+
+    let (out, stdout) = run(&dir, &["--json", "--html", "pool.json"]);
+    assert!(out.status.success(), "stderr: {}", stderr_of(&out));
+    // stdout stays exactly one machine-readable line
+    let lines: Vec<_> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "stdout: {stdout}");
+    let v: Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(v["subcommand"], "all");
+    // the report file is written additionally
+    let report = fs::read_to_string(dir.join("pool-report.html")).unwrap();
+    assert!(report.starts_with("<!DOCTYPE html>"));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn html_verbose_is_ignored() {
+    let plain = temp_dir("html-verbose-plain");
+    let verbose = temp_dir("html-verbose-full");
+    write_fixture(&plain, "pool.json");
+    write_fixture(&verbose, "pool.json");
+
+    let (plain_out, _) = run(&plain, &["--html", "pool.json"]);
+    assert!(
+        plain_out.status.success(),
+        "stderr: {}",
+        stderr_of(&plain_out)
+    );
+    let (verbose_out, _) = run(&verbose, &["--html", "--verbose", "pool.json"]);
+    assert!(
+        verbose_out.status.success(),
+        "stderr: {}",
+        stderr_of(&verbose_out)
+    );
+    // the HTML report always embeds the full tier: --verbose changes nothing
+    assert_eq!(
+        fs::read_to_string(plain.join("pool-report.html")).unwrap(),
+        fs::read_to_string(verbose.join("pool-report.html")).unwrap()
+    );
+    fs::remove_dir_all(&plain).ok();
+    fs::remove_dir_all(&verbose).ok();
+}
+
+#[test]
+fn html_overwrites_silently() {
+    let dir = temp_dir("html-overwrite");
+    write_fixture(&dir, "pool.json");
+
+    let (first, _) = run(&dir, &["--html", "pool.json"]);
+    assert!(first.status.success(), "stderr: {}", stderr_of(&first));
+    let before = fs::read_to_string(dir.join("pool-report.html")).unwrap();
+    let (second, _) = run(&dir, &["--html", "pool.json"]);
+    assert!(second.status.success(), "stderr: {}", stderr_of(&second));
+    assert_eq!(
+        before,
+        fs::read_to_string(dir.join("pool-report.html")).unwrap(),
+        "a re-run overwrites silently, exit 0"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn html_write_failure_is_an_io_error() {
+    let dir = temp_dir("html-ioerror");
+    write_fixture(&dir, "pool.json");
+    // a directory where the report would go makes the write fail
+    fs::create_dir_all(dir.join("pool-report.html")).unwrap();
+
+    let (out, _) = run(&dir, &["--html", "pool.json"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr_of(&out).contains("io error"), "stderr");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn html_report_path_follows_the_pool_stem() {
+    let dir = temp_dir("html-stem");
+    write_fixture(&dir, "my.pool.json");
+
+    let (out, stdout) = run(&dir, &["--html", "my.pool.json"]);
+    assert!(out.status.success(), "stderr: {}", stderr_of(&out));
+    assert_eq!(stdout, "wrote 'my.pool-report.html'\n", "stdout: {stdout}");
+    assert!(dir.join("my.pool-report.html").is_file());
+    fs::remove_dir_all(&dir).ok();
+}

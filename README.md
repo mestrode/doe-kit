@@ -17,7 +17,8 @@ model of experiment designs; the `doe` command-line tool ties them together.
 - `doe-stats` — statistical analysis of evaluated results
   (`crates/sensitivity/stats`), used by `sampling stats`
 - `doe-stats` binary — read-only statistics of the pool, one
-  subcommand per section (`crates/sensitivity/bin`)
+  subcommand per section, plus `--html` for the interactive
+  single-file report (`crates/sensitivity/bin`)
 - `doe-simio` — the `simio` command-line tool: simulation
   input/output for the pool (`crates/simulation/simio`); `test`
   evaluates the analytic example functions on unevaluated designs
