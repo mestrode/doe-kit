@@ -42,13 +42,23 @@ differ between parameters):
    its probability mass (stratified sampling).
 
 Then the assignment of the `m` new designs to **distinct empty bins per
-parameter** (the Latin Hypercube property) with the lowest score is chosen.
-The score of an assignment is the sum of squared Pearson correlations over
-all parameter pairs, computed on the transformed values of the shared
-in-scope designs plus all new candidates. Assignments are enumerated
-exactly up to the configured cap; beyond that, a deterministic greedy
-fallback places designs one at a time. All computation happens in `[0, 1]`
-space; real values are written only in the output.
+parameter** (the Latin Hypercube property) with the best combined objective
+is chosen. The primary criterion is the saturated correlation key: the sum
+over all parameter pairs of each pair's squared Pearson correlation floored
+at the null floor `τ = 1e-2` (|r| ≤ 0.1 counts as null), computed on the
+transformed values of the shared in-scope designs plus all new candidates.
+The floor caps what null headroom is worth — the search cannot buy real
+correlation in one pair by spending null-level headroom in another. Among
+exact ties of the key, the lower Audze–Eglais space-filling energy of the
+bin-center proxy wins: the new candidates and earlier chunks' placements
+sit at their bin centers on the unit cube, the original in-scope designs
+at their actual transformed values. The tie-break is budgeted (2e9 distance
+terms per chunk): once the budget runs out, the remaining assignments
+compare on the key alone, and the run is flagged so the polish pass still
+applies. Assignments are enumerated exactly up to the configured cap;
+beyond that, a deterministic greedy fallback places designs one at a time
+under the same comparator. All computation happens in `[0, 1]` space; real
+values are written only in the output.
 
 ### Batching
 
@@ -85,13 +95,16 @@ ones immediately; the pass stops at convergence or when a bounded
 evaluation budget is exhausted (no randomness anywhere). A single-chunk
 exact run skips the pass: the exact enumeration already searched the
 whole assignment space, of which the descent's swap space is a subset,
-so it is a provable no-op there.
+so it is a provable no-op there — unless the chunk's AE tie-break budget
+ran out mid-search, which voids the joint-optimality proof and re-enables
+the pass.
 
 The pass descends a combined objective in two phases:
 
 - **Phase 1 (correlation)** greedily descends the pooled pair r², the
-  score the selection optimizes. A swap in parameter `j` changes only
-  the pairs involving `j`, each scored in O(1) from running raw sums.
+  unfloored form of the selection's saturated key. A swap in parameter `j`
+  changes only the pairs involving `j`, each scored in O(1) from running
+  raw sums.
 - **Phase 2 (space-filling)** descends the Audze–Eglais potential
   energy of the active point set (the designs in scope for every
   parameter plus the new designs, on the unit cube) under a per-pair
@@ -114,10 +127,12 @@ The pass is the quality stage for the deficit paths of the chunked
 selection: a single greedy chunk that drifted at 2 parameters and
 1000 designs polishes from a pooled score of 0.386 to ~1e-13 in
 milliseconds, the forced one-design-per-chunk loop at 50 parameters
-gains ~20% score, and the X-shaped zero-correlation minimum of a
-fresh-pool exploration (100 designs, 3 parameters) opens from a
-pooled r² of 0.72 to 8e-5 while the AE energy drops ~7x — its
-minimum pairwise distance rises from ~0.01 to ~0.20 on the unit cube.
+gains ~20% score, and a fresh-pool exploration (100 designs, 3
+parameters) no longer lands on the X-shaped zero-correlation minimum
+at all: the saturated key plus AE tie-break place it at a pooled r² of
+~5e-4 — the pooled-r²-only search landed at 0.72 — and the pass takes
+that to ~6e-5 with an AE energy of 3.8 and a minimum pairwise distance
+of ~0.20 on the unit cube.
 
 `explore()` runs the same machinery with every parameter treated as
 uniform over its full definition range `[min, max]`: scopes and non-uniform

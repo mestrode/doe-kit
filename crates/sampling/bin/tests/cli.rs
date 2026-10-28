@@ -388,7 +388,14 @@ fn polish_refines_the_first_exploration_and_reports_itself() {
     );
     let before = v["polish_score_before"].as_f64().unwrap();
     let after = v["polish_score_after"].as_f64().unwrap();
-    assert!(after < before, "polish must improve: {before} -> {after}");
+    // phase 2 may spend r² headroom for space-filling — the invariant
+    // is the per-pair τ guard of the combined objective, not a
+    // monotone pooled score (3 parameters: 3 pairs of headroom)
+    let tau_headroom = 3.0 * plhs::space::SELECTION_TAU;
+    assert!(
+        after <= before + tau_headroom + 1e-9,
+        "polish broke the τ guard: {before} -> {after}"
+    );
     assert_eq!(v["score"].as_f64().unwrap(), after);
     // the space-filling phase is monotone in the AE energy
     let ae_before = v["polish_ae_before"].as_f64().unwrap();
