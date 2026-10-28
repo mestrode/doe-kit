@@ -13,6 +13,7 @@ clap = { version = "4", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 plhs = { path = "../plhs" }
 doe-stats = { path = "../../sensitivity/stats" }
+doe-stats-bin = { path = "../../sensitivity/bin" }
 doe-pool = { path = "../../doe-pool" }
 
 [[bin]]
