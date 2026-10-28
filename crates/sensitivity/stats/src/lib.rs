@@ -20,12 +20,18 @@
 //!   pool). It answers "how well are the generated sampling points
 //!   distributed, and do they correlate?" before anything has been
 //!   evaluated.
-//! - Per result variable: coverage (evaluated vs total designs) and
-//!   descriptive statistics (min, max, mean, sample std, median).
+//! - Per result variable: coverage (evaluated vs total designs),
+//!   descriptive statistics (min, max, mean, sample std, median), the
+//!   designs holding the extremes, and the strongest input→output
+//!   relations (the maximum `|pearson|`, `|spearman|` and `eta2` over
+//!   the parameters, with the parameter that carries each).
 //! - Per parameter: Pearson and Spearman correlation with the result
-//!   (Spearman catches monotonic-but-nonlinear trends), mean/std of the
-//!   results inside the parameter's scope vs outside it, and the result
-//!   mean per decile of the definition range.
+//!   (Spearman catches monotonic-but-nonlinear trends), the
+//!   correlation ratio `eta2` over the decile bins (which catches
+//!   non-monotonic, e.g. U-shaped, relations that both correlations
+//!   read as ~0), mean/std of the results inside the parameter's
+//!   scope vs outside it, and the result mean per decile of the
+//!   definition range.
 //!
 //! Correlations are reported as `None` when fewer than 3 evaluated designs
 //! exist or either series has zero variance — the numbers would be noise.
@@ -54,8 +60,46 @@ pub struct VariableStats {
     /// Sample standard deviation (n - 1; 0.0 for n < 2).
     pub std: f64,
     pub median: f64,
+    /// The designs holding the variable's minimum and maximum.
+    pub extremes: Extremes,
+    /// The strongest input→output relations (the compact summary of
+    /// the per-parameter blocks).
+    pub relations: Relations,
     /// Per-parameter statistics, aligned with the input parameter slice.
     pub parameters: Vec<ParameterStats>,
+}
+
+/// The designs holding a result variable's minimum and maximum. Ties
+/// keep the first evaluated design in results order.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Extremes {
+    /// Design carrying the minimum value.
+    pub min_design: String,
+    /// Design carrying the maximum value.
+    pub max_design: String,
+}
+
+/// The strongest input→output relation of one result variable for one
+/// metric: the value and the parameter that carries it. Ties between
+/// parameters are broken by the lexicographically first parameter name.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct NamedValue {
+    pub value: f64,
+    pub parameter: String,
+}
+
+/// The strongest input→output relations of one result variable: the
+/// compact summary of the per-parameter blocks. Each metric is `None`
+/// when no parameter defines it (n < 3, no variance, or — for `eta2` —
+/// fewer than 2 occupied deciles).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Relations {
+    /// Largest `|pearson|` over the parameters.
+    pub max_abs_pearson: Option<NamedValue>,
+    /// Largest `|spearman|` over the parameters.
+    pub max_abs_spearman: Option<NamedValue>,
+    /// Largest correlation ratio over the parameters.
+    pub max_eta2: Option<NamedValue>,
 }
 
 /// Per-parameter statistics for one result variable.
@@ -68,6 +112,13 @@ pub struct ParameterStats {
     pub pearson: Option<f64>,
     /// Spearman rank correlation; same conditions as [`Self::pearson`].
     pub spearman: Option<f64>,
+    /// Correlation ratio (eta2) over the 10 decile bins of the
+    /// parameter's definition range: the between-bin share of the
+    /// result's total variance. Catches non-monotonic (e.g. U-shaped)
+    /// relations that both correlations read as ~0; `None` below 3
+    /// evaluated designs, with fewer than 2 occupied bins, or without
+    /// result variance.
+    pub eta2: Option<f64>,
     /// Mean/std of the result over evaluated designs inside the scope.
     pub in_scope: MeanStd,
     /// Mean/std over evaluated designs outside the scope; `None` when no
@@ -503,6 +554,21 @@ pub fn analyze(
         }
         let ys: Vec<f64> = pairs.iter().map(|&(_, v)| v).collect();
 
+        // the designs holding the extremes (first occurrence wins ties)
+        let mut min_design = pairs[0].0.name.clone();
+        let mut max_design = pairs[0].0.name.clone();
+        let (mut min_v, mut max_v) = (pairs[0].1, pairs[0].1);
+        for (design, value) in &pairs {
+            if *value < min_v {
+                min_v = *value;
+                min_design = design.name.clone();
+            }
+            if *value > max_v {
+                max_v = *value;
+                max_design = design.name.clone();
+            }
+        }
+
         // descriptive statistics
         let mut sorted = ys.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).expect("results are finite"));
@@ -556,6 +622,29 @@ pub fn analyze(
                 deciles[bin].0 += 1;
                 deciles[bin].1 += value;
             }
+
+            // correlation ratio (eta2) over the decile bins: the
+            // between-bin share of the result's total variance. One
+            // occupied bin explains nothing (nothing to compare
+            // against), zero variance leaves nothing to explain
+            let total_ss: f64 = ys.iter().map(|y| (y - mean) * (y - mean)).sum();
+            let eta2 = if n < 3
+                || deciles.iter().filter(|(c, _)| *c > 0).count() < 2
+                || variance_is_zero(&ys)
+            {
+                None
+            } else {
+                let between_ss: f64 = deciles
+                    .iter()
+                    .filter(|(c, _)| *c > 0)
+                    .map(|&(c, sum)| {
+                        let bin_mean = sum / c as f64;
+                        c as f64 * (bin_mean - mean) * (bin_mean - mean)
+                    })
+                    .sum();
+                Some((between_ss / total_ss).clamp(0.0, 1.0))
+            };
+
             let deciles: Vec<Decile> = deciles
                 .into_iter()
                 .map(|(count, sum)| Decile {
@@ -568,11 +657,20 @@ pub fn analyze(
                 name: param.name.clone(),
                 pearson: p,
                 spearman: s,
+                eta2,
                 in_scope: mean_std(&in_scope),
                 out_of_scope,
                 deciles,
             });
         }
+
+        // the strongest input→output relations, the compact summary of
+        // the per-parameter blocks
+        let relations = Relations {
+            max_abs_pearson: strongest(&parameter_stats, |p| p.pearson.map(f64::abs)),
+            max_abs_spearman: strongest(&parameter_stats, |p| p.spearman.map(f64::abs)),
+            max_eta2: strongest(&parameter_stats, |p| p.eta2),
+        };
 
         out.push(VariableStats {
             name: variable.clone(),
@@ -583,10 +681,34 @@ pub fn analyze(
             mean,
             std,
             median,
+            extremes: Extremes {
+                min_design,
+                max_design,
+            },
+            relations,
             parameters: parameter_stats,
         });
     }
     Ok(out)
+}
+
+/// The strongest defined value over the parameters; ties between
+/// parameters are broken by the lexicographically first name.
+fn strongest<F>(parameters: &[ParameterStats], value: F) -> Option<NamedValue>
+where
+    F: Fn(&ParameterStats) -> Option<f64>,
+{
+    parameters
+        .iter()
+        .filter_map(|p| value(p).map(|v| (v, p.name.as_str())))
+        .fold(None, |best: Option<(f64, &str)>, (v, name)| match best {
+            Some((bv, bn)) if v < bv || (v == bv && name > bn) => Some((bv, bn)),
+            _ => Some((v, name)),
+        })
+        .map(|(value, parameter)| NamedValue {
+            value,
+            parameter: parameter.to_owned(),
+        })
 }
 
 /// One parameter's definition as reported by the input analysis.
@@ -1606,6 +1728,148 @@ mod tests {
         let x = Parameter::uniform("x", 0.0, 10.0).unwrap();
         let input = analyze_inputs(&[x]);
         assert_eq!(input.parameters[0].lost_probability, None);
+    }
+
+    // ------------------------------------------------------------------
+    // eta2, extremes and relations
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn eta2_is_one_for_a_u_shaped_relation_the_correlations_miss() {
+        let params = vec![param("x", 0.0, 10.0)];
+        // one evaluated design per occupied decile: the decile means
+        // explain all of the variance, eta2 = 1 exactly
+        let designs = designs(&[(0.5, 0.0), (1.5, 0.0), (4.5, 0.0), (8.5, 0.0), (9.5, 0.0)]);
+        // energy = (x - 5)^2: perfectly U-shaped
+        let results = results(
+            &["0.1", "0.2", "0.3", "0.4", "0.5"],
+            &[20.25, 12.25, 0.25, 12.25, 20.25],
+        );
+        let stats = analyze(&params, &designs, &results).unwrap();
+        let p = &stats[0].parameters[0];
+        // both correlations read ~0 on the symmetric U; eta2 sees it all
+        assert!(p.pearson.unwrap().abs() < 0.1, "pearson: {p:?}");
+        assert!(p.spearman.unwrap().abs() < 1e-12, "spearman: {p:?}");
+        assert!((p.eta2.unwrap() - 1.0).abs() < 1e-12, "eta2: {p:?}");
+    }
+
+    #[test]
+    fn eta2_is_hand_computed_with_multi_occupancy_bins() {
+        let params = vec![param("x", 0.0, 10.0)];
+        // x lands in deciles 0, 1, 0, 1: two occupied bins, two designs
+        // each — bin means 0.40625 and 1.90625 around the overall mean
+        // 1.15625 (all values dyadic, the f64 arithmetic is exact)
+        let designs = designs(&[(0.5, 0.0), (1.5, 0.0), (0.75, 0.0), (1.25, 0.0)]);
+        // energy = x^2
+        let results = results(&["0.1", "0.2", "0.3", "0.4"], &[0.25, 2.25, 0.5625, 1.5625]);
+        let stats = analyze(&params, &designs, &results).unwrap();
+        // between-bin ss = 2*(0.40625-1.15625)^2 + 2*(1.90625-1.15625)^2
+        //                 = 2.25; total ss = 2.53515625
+        let expected = 2.25 / 2.53515625;
+        assert!((stats[0].parameters[0].eta2.unwrap() - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn eta2_is_none_below_three_designs_with_one_bin_or_without_variance() {
+        let params = vec![param("x", 0.0, 10.0)];
+        // n < 3: undefined
+        let two_points = designs(&[(0.5, 0.0), (1.5, 0.0)]);
+        let two_results = results(&["0.1", "0.2"], &[1.0, 2.0]);
+        let stats = analyze(&params, &two_points, &two_results).unwrap();
+        assert_eq!(stats[0].parameters[0].eta2, None);
+
+        // all x in a single decile bin: no between-bin comparison
+        // possible, while the parameter series itself has variance
+        // (the correlations are defined — the gates differ)
+        let one_bin = designs(&[(5.05, 0.0), (5.15, 0.0), (5.25, 0.0)]);
+        let one_bin_results = results(&["0.1", "0.2", "0.3"], &[1.0, 2.0, 3.0]);
+        let stats = analyze(&params, &one_bin, &one_bin_results).unwrap();
+        let p = &stats[0].parameters[0];
+        assert_eq!(p.eta2, None);
+        assert!(p.pearson.is_some(), "pearson gate is variance only");
+
+        // zero result variance: nothing to explain
+        let flat = designs(&[(1.0, 0.0), (5.0, 0.0), (9.0, 0.0)]);
+        let flat_results = results(&["0.1", "0.2", "0.3"], &[3.0, 3.0, 3.0]);
+        let stats = analyze(&params, &flat, &flat_results).unwrap();
+        assert_eq!(stats[0].parameters[0].eta2, None);
+    }
+
+    #[test]
+    fn extremes_name_the_designs_holding_the_minimum_and_maximum() {
+        let params = vec![param("x", 0.0, 10.0)];
+        let pool = designs(&[(1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0)]);
+        let entries = results(&["0.1", "0.2", "0.3", "0.4"], &[3.0, 1.0, 2.0, 4.0]);
+        let stats = analyze(&params, &pool, &entries).unwrap();
+        assert_eq!(stats[0].extremes.min_design, "0.2");
+        assert_eq!(stats[0].extremes.max_design, "0.4");
+
+        // ties: the first evaluated design wins
+        let tied = results(&["0.1", "0.2", "0.3", "0.4"], &[1.0, 1.0, 2.0, 2.0]);
+        let stats = analyze(&params, &pool, &tied).unwrap();
+        assert_eq!(stats[0].extremes.min_design, "0.1");
+        assert_eq!(stats[0].extremes.max_design, "0.3");
+    }
+
+    #[test]
+    fn relations_pick_the_strongest_parameter() {
+        let params = vec![param("a", 0.0, 10.0), param("b", 0.0, 10.0)];
+        let pool: Vec<Design> = [(1.0, 1.0), (2.0, 1.0), (3.0, 2.0), (4.0, 3.0)]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (a, b))| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![a, b],
+            })
+            .collect();
+        // energy = a: perfectly linear in a, noisier in b
+        let entries = results(&["0.1", "0.2", "0.3", "0.4"], &[1.0, 2.0, 3.0, 4.0]);
+        let stats = analyze(&params, &pool, &entries).unwrap();
+        let rel = &stats[0].relations;
+        let p = rel.max_abs_pearson.as_ref().expect("max pearson");
+        assert_eq!(p.parameter, "a");
+        assert!((p.value - 1.0).abs() < 1e-12);
+        assert_eq!(rel.max_abs_spearman.as_ref().unwrap().parameter, "a");
+        // eta2 of a: a occupies deciles 1, 2, 3, 4 — one value per
+        // bin, the bin means explain everything
+        let e = rel.max_eta2.as_ref().expect("max eta2");
+        assert_eq!(e.parameter, "a");
+        assert!((e.value - 1.0).abs() < 1e-12);
+
+        // ties go to the lexicographically first parameter name, not
+        // the pool order: b precedes a and both columns are identical
+        let params = vec![param("b", 0.0, 10.0), param("a", 0.0, 10.0)];
+        let tied_pool: Vec<Design> = [(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0)]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (b, a))| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![b, a],
+            })
+            .collect();
+        let tied = results(&["0.1", "0.2", "0.3", "0.4"], &[1.0, 2.0, 3.0, 4.0]);
+        let stats = analyze(&params, &tied_pool, &tied).unwrap();
+        let rel = &stats[0].relations;
+        assert_eq!(rel.max_abs_pearson.as_ref().unwrap().parameter, "a");
+        assert_eq!(rel.max_abs_spearman.as_ref().unwrap().parameter, "a");
+        assert_eq!(rel.max_eta2.as_ref().unwrap().parameter, "a");
+
+        // below three evaluated designs nothing is defined
+        let short = vec![
+            Design {
+                name: "0.1".to_owned(),
+                values: vec![1.0, 2.0],
+            },
+            Design {
+                name: "0.2".to_owned(),
+                values: vec![2.0, 4.0],
+            },
+        ];
+        let two = results(&["0.1", "0.2"], &[1.0, 2.0]);
+        let stats = analyze(&params, &short, &two).unwrap();
+        assert_eq!(stats[0].relations.max_abs_pearson, None);
+        assert_eq!(stats[0].relations.max_abs_spearman, None);
+        assert_eq!(stats[0].relations.max_eta2, None);
     }
 
     // ------------------------------------------------------------------
