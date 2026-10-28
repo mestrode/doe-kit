@@ -84,6 +84,17 @@ cadence; publication to crates.io is manual and per crate.
   never warns. The JSON `input` object carries the `lost_probability`
   facts in both tiers — thresholds never appear in JSON. A Gaussian
   `sigma` must be greater than zero (validation error).
+- The output section reports per result variable: the extreme designs
+  (`min at` / `max at`; the first evaluated design wins ties), and one
+  relation maxima line `max |pearson| X (p), max |spearman| Y (p),
+  max eta2 Z (p)` — `n/a` per metric when undefined, ties name the
+  lexicographically first parameter. `eta2` is the correlation ratio
+  over the 10 decile bins of the parameter's definition range (the
+  between-bin share of the result's total variance; undefined below 3
+  evaluated designs, with fewer than 2 occupied bins, or without result
+  variance) — it catches non-monotonic relations the correlations miss.
+  The JSON `results` objects carry `extremes` and `relations` in both
+  tiers; `--verbose` adds `parameters[].eta2`.
 - `--json` on a subcommand means one machine-readable line on stdout,
   human output suppressed, errors still human on stderr. Every
   sampling-method subcommand gets this flag.

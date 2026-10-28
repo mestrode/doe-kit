@@ -886,6 +886,12 @@ fn stats_json_reports_the_compact_pool_analysis() {
     assert_eq!(results[0]["name"], "energy");
     assert_eq!(results[0]["n"], 3);
     assert_eq!(results[0]["total"], 30);
+    // the wrapper inherits the per-result facts: the extreme designs
+    // and the strongest input→output relations
+    assert_eq!(results[0]["extremes"]["min_design"], "0.2");
+    assert_eq!(results[0]["extremes"]["max_design"], "0.3");
+    assert!(results[0]["relations"]["max_abs_pearson"]["parameter"].is_string());
+    assert!(results[0]["relations"]["max_eta2"]["parameter"].is_string());
     assert!(
         results[0].get("parameters").is_none(),
         "compact results must not carry per-parameter blocks"

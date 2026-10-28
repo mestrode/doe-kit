@@ -23,7 +23,7 @@
 //! report and `--json` alike.
 
 use doe_stats::{
-    DECILES, InputStats, ParameterDefinition, PoolStats, ResultPairStats, VariableStats,
+    DECILES, InputStats, NamedValue, ParameterDefinition, PoolStats, ResultPairStats, VariableStats,
 };
 
 // ---------------------------------------------------------------------
@@ -187,24 +187,50 @@ pub fn human_output(results: &[VariableStats], pairs: &ResultPairStats, verbose:
     let mut out = String::from("outputs:\n");
     for v in results {
         out.push_str(&format!(
-            "{}: n={}, min {:.6}, max {:.6}, mean {:.6}, median {:.6}, std {:.6}\n",
-            v.name, v.n, v.min, v.max, v.mean, v.median, v.std
+            "{}: n={}, min {:.6}, max {:.6}, mean {:.6}, median {:.6}, std {:.6}, min at {}, max at {}\n",
+            v.name,
+            v.n,
+            v.min,
+            v.max,
+            v.mean,
+            v.median,
+            v.std,
+            v.extremes.min_design,
+            v.extremes.max_design
+        ));
+        // the strongest input→output relations, the compact summary of
+        // the per-parameter blocks (always printed; n/a per metric when
+        // no parameter defines it)
+        out.push_str(&format!(
+            "  max |pearson| {}, max |spearman| {}, max eta2 {}\n",
+            relation_of(&v.relations.max_abs_pearson),
+            relation_of(&v.relations.max_abs_spearman),
+            relation_of(&v.relations.max_eta2),
         ));
         if verbose {
             for p in &v.parameters {
-                match (p.pearson, p.spearman) {
-                    (Some(pe), Some(se)) => {
-                        out.push_str(&format!(
-                            "  {}: pearson {pe:.6}, spearman {se:.6}\n",
-                            p.name
-                        ));
-                    }
-                    _ => {
-                        out.push_str(&format!(
-                            "  {}: pearson n/a, spearman n/a (n < 3 or no variance)\n",
-                            p.name
-                        ));
-                    }
+                let pearson = p
+                    .pearson
+                    .map(|r| format!("{r:.6}"))
+                    .unwrap_or_else(|| "n/a".to_owned());
+                let spearman = p
+                    .spearman
+                    .map(|r| format!("{r:.6}"))
+                    .unwrap_or_else(|| "n/a".to_owned());
+                let eta2 = p
+                    .eta2
+                    .map(|e| format!("{e:.6}"))
+                    .unwrap_or_else(|| "n/a".to_owned());
+                if p.pearson.is_some() && p.spearman.is_some() && p.eta2.is_some() {
+                    out.push_str(&format!(
+                        "  {}: pearson {pearson}, spearman {spearman}, eta2 {eta2}\n",
+                        p.name
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "  {}: pearson {pearson}, spearman {spearman}, eta2 {eta2} (n < 3, no variance or too few occupied deciles)\n",
+                        p.name
+                    ));
                 }
                 out.push_str(&format!(
                     "     in scope: {} evaluated, mean {:.6}, std {:.6}\n",
@@ -435,6 +461,15 @@ fn designs_per_parameter(designs: usize, parameters: usize) -> String {
 fn max_of(v: Option<f64>) -> String {
     match v {
         Some(x) => format!("{x:.6}"),
+        None => "n/a".to_owned(),
+    }
+}
+
+/// Formats one relation maximum: `X (param)`, or `n/a` when no
+/// parameter defines it.
+fn relation_of(v: &Option<NamedValue>) -> String {
+    match v {
+        Some(nv) => format!("{:.6} ({})", nv.value, nv.parameter),
         None => "n/a".to_owned(),
     }
 }

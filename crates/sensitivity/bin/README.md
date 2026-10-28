@@ -81,19 +81,31 @@ Output (verbatim the `sampling stats` results block) plus the
 output↔output correlations: every pair of result variables gets a
 Pearson and Spearman correlation over the designs evaluated in both
 (n/a below 3 shared designs or without variance; with fewer than two
-result variables the pairs block is omitted).
+result variables the pairs block is omitted). Each result variable's
+summary line names the designs holding its minimum and maximum
+(`min at`, `max at`; ties keep the first evaluated design), and one
+line below it names the strongest input→output relations — the
+maximum absolute Pearson and Spearman correlation and the maximum
+eta2 over the parameters, each with the responsible parameter (`n/a`
+per metric when undefined; ties name the lexicographically first
+parameter). eta2 (the correlation ratio) is the between-decile share
+of the result's variance: it catches non-monotonic, e.g. U-shaped,
+relations that both correlations read as ~0.
 
 ```text
 outputs:
-a: n=4, min 1.000000, max 4.000000, mean 2.500000, median 2.500000, std 1.290994
-b: n=4, min 2.000000, max 8.000000, mean 5.000000, median 5.000000, std 2.581989
+a: n=4, min 1.000000, max 4.000000, mean 2.500000, median 2.500000, std 1.290994, min at 1.1, max at 1.4
+  max |pearson| 0.998274 (x), max |spearman| 1.000000 (x), max eta2 1.000000 (x)
+b: n=4, min 2.000000, max 8.000000, mean 5.000000, median 5.000000, std 2.581989, min at 1.1, max at 1.4
+  max |pearson| 0.998274 (x), max |spearman| 1.000000 (x), max eta2 1.000000 (x)
 output pairs: 1, max |pearson| 1.000000, max |spearman| 1.000000
 ```
 
-`--verbose` prints the per-parameter detail of each result and every
-output pair:
+`--verbose` prints the per-parameter detail of each result (the
+correlation lines gain `eta2`) and every output pair:
 
 ```text
+  x: pearson 0.998274, spearman 1.000000, eta2 1.000000
   a vs b: pearson 1.000000, spearman 1.000000 (n 4)
 ```
 
@@ -103,7 +115,11 @@ output pair:
 `output`, or `all` for the bare full report — the `sampling stats`
 wrapper keeps its `stats` label), `file`, `evaluated`, and the section
 objects `input` (single tier: the parameter definitions with their
-scope fractions), `pool`, `results` and `output_pairs`. The latter
-three follow the tiering: the default is the compact object (the pool
-and the output pairs carry `n_pairs` instead of their detail lists),
-`--json --verbose` the full one.
+scope fractions), `pool`, `results` and `output_pairs`. Each result
+object carries `extremes` (`min_design`, `max_design`) and `relations`
+(`max_abs_pearson`, `max_abs_spearman`, `max_eta2`, each
+`{value, parameter}` or `null`) in both tiers. The latter three
+follow the tiering: the default is the compact object (the pool and
+the output pairs carry `n_pairs` instead of their detail lists; each
+result drops its `parameters`), `--json --verbose` the full one —
+including the per-parameter `eta2`.

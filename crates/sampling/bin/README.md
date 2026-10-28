@@ -196,13 +196,22 @@ evaluated count and the context number of designs per parameter:
 Statistics of the evaluated `results` (reported only when `results`
 exist). Per numeric result variable (any numeric field on a result
 entry, e.g. `energy`), the compact tier prints one summary line:
-coverage (how many of the pool's designs are evaluated) and the
-descriptive statistics n, min, max, mean, median, sample std.
+coverage (how many of the pool's designs are evaluated), the
+descriptive statistics n, min, max, mean, median, sample std, and the
+designs holding the minimum and maximum (`min at`, `max at`). Below it
+one line names the strongest input→output relations: the maximum
+absolute Pearson and Spearman correlation and the maximum eta2 over
+the parameters, each with the responsible parameter (`n/a` per metric
+when undefined; ties name the lexicographically first parameter).
 `--verbose` adds, per parameter:
 
 1. Pearson and Spearman correlation between the parameter value and the
    result (n/a below 3 evaluated designs or without variance —
-   Spearman catches monotonic-but-nonlinear trends).
+   Spearman catches monotonic-but-nonlinear trends), plus the
+   correlation ratio eta2: the between-decile share of the result's
+   variance, which catches non-monotonic (e.g. U-shaped) relations
+   that both correlations read as ~0 (n/a below 3 evaluated designs,
+   with fewer than 2 occupied deciles, or without result variance).
 2. The result mean/std inside the current scope vs outside it (printed
    only when evaluated designs exist outside the scope).
 3. The result mean per decile (10 equal-width bins) of the definition

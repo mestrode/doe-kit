@@ -461,6 +461,22 @@ fn output_reports_results_and_output_pairs() {
     assert!(stdout.starts_with("outputs:\n"), "stdout: {stdout}");
     assert!(stdout.contains("a: n=4, min 1.000000,"), "stdout: {stdout}");
     assert!(stdout.contains("b: n=4, min 2.000000,"), "stdout: {stdout}");
+    // the descriptives line names the extreme designs
+    assert!(
+        stdout.contains(
+            "a: n=4, min 1.000000, max 4.000000, mean 2.500000, median 2.500000, std 1.290994, min at 1.1, max at 1.4"
+        ),
+        "stdout: {stdout}"
+    );
+    // the relation maxima name the responsible parameter (x carries
+    // the strongest relation to a; ties go to lexicographically
+    // first names, so x wins spearman and eta2 against y)
+    assert!(stdout.contains("max |pearson| 0.9982"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("max |spearman| 1.000000 (x)"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("max eta2 1.000000 (x)"), "stdout: {stdout}");
     // b = 2a: one pair, perfectly correlated
     assert!(
         stdout.contains("output pairs: 1, max |pearson| 1.000000, max |spearman| 1.000000"),
@@ -488,6 +504,12 @@ fn output_verbose_lists_the_pair_details() {
     assert!(out.status.success(), "stderr: {}", stderr_of(&out));
     assert!(stdout.contains("in scope: "), "stdout: {stdout}");
     assert!(stdout.contains("deciles: ["), "stdout: {stdout}");
+    // the per-parameter correlation lines carry eta2
+    assert!(stdout.contains("x: pearson 0.9982"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("spearman 1.000000, eta2 1.000000"),
+        "stdout: {stdout}"
+    );
     assert!(
         stdout.contains("  a vs b: pearson 1.000000, spearman 1.000000 (n 4)"),
         "stdout: {stdout}"
@@ -549,6 +571,38 @@ fn output_unknown_result_name_exits_1() {
 }
 
 #[test]
+fn output_reports_na_relations_when_no_parameter_correlates() {
+    let dir = temp_dir("output-na");
+    let file = dir.join("pool.json");
+    // only two designs evaluated: below three, no relation is defined
+    let mut root: Value = serde_json::from_str(&fixture()).unwrap();
+    root["results"] = Value::Array(
+        root["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .take(2)
+            .cloned()
+            .collect(),
+    );
+    fs::write(&file, serde_json::to_string(&root).unwrap()).unwrap();
+
+    let (out, stdout) = run(&dir, &["output", "pool.json"]);
+    assert!(out.status.success(), "stderr: {}", stderr_of(&out));
+    // the extremes still exist; every relation maximum is n/a and the
+    // line is printed all the same
+    assert!(
+        stdout.contains("a: n=2, min 1.000000, max 2.000000, mean 1.500000, median 1.500000, std 0.707107, min at 1.1, max at 1.2"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("max |pearson| n/a, max |spearman| n/a, max eta2 n/a"),
+        "stdout: {stdout}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn output_json_reports_results_and_pairs() {
     let dir = temp_dir("output-json");
     write_fixture(&dir, "pool.json");
@@ -559,6 +613,21 @@ fn output_json_reports_results_and_pairs() {
     assert_eq!(v["subcommand"], "output");
     assert_eq!(v["evaluated"], 4);
     assert_eq!(v["results"].as_array().unwrap().len(), 2);
+    // the per-result facts: the extreme designs and the strongest
+    // input→output relations with the responsible parameter
+    let a = &v["results"][0];
+    assert_eq!(a["name"], "a");
+    assert_eq!(a["extremes"]["min_design"], "1.1");
+    assert_eq!(a["extremes"]["max_design"], "1.4");
+    assert_eq!(a["relations"]["max_abs_pearson"]["parameter"], "x");
+    assert!(
+        (a["relations"]["max_abs_pearson"]["value"].as_f64().unwrap() - 0.998274).abs() < 1e-4,
+        "relations: {a}"
+    );
+    assert_eq!(a["relations"]["max_abs_spearman"]["parameter"], "x");
+    assert_eq!(a["relations"]["max_abs_spearman"]["value"], 1.0);
+    assert_eq!(a["relations"]["max_eta2"]["parameter"], "x");
+    assert_eq!(a["relations"]["max_eta2"]["value"], 1.0);
     assert_eq!(v["output_pairs"]["n_pairs"], 1);
     assert_eq!(v["output_pairs"]["max_abs_pearson"], 1.0);
     assert!(v["output_pairs"].get("pairs").is_none());
@@ -578,6 +647,11 @@ fn output_json_reports_results_and_pairs() {
     assert_eq!(pairs[0]["pearson"], 1.0);
     assert_eq!(pairs[0]["spearman"], 1.0);
     assert_eq!(v["results"][0]["parameters"].as_array().unwrap().len(), 2);
+    // the per-parameter blocks carry eta2 in the verbose tier
+    assert!(
+        v["results"][0]["parameters"][0]["eta2"].is_number(),
+        "parameters: {v}"
+    );
     fs::remove_dir_all(&dir).ok();
 }
 
