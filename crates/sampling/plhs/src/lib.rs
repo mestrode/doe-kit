@@ -13,9 +13,11 @@
 //! 3. At least `m` bins are empty (pigeonhole); every empty bin receives a
 //!    random candidate value drawn from its probability mass.
 //! 4. Assignments of the `m` new designs to distinct empty bins per
-//!    parameter are scored by the sum of squared Pearson correlations over
-//!    all parameter pairs (in-scope samples plus the candidates) and the
-//!    best assignment wins. Exact enumeration up to a configurable cap,
+//!    parameter are compared under the combined objective (issue #47):
+//!    the saturated correlation key — every pair's r² floored at the τ
+//!    null floor — decides first, and among exact ties of the key the
+//!    lower Audze–Eglais space-filling energy of the bin-center proxy
+//!    wins. Exact enumeration up to a configurable cap,
 //!    greedy sequential selection beyond it. Large runs are placed in
 //!    chunks sized so each chunk's search fits the greedy budget; at 50+
 //!    parameters that degenerates to the standard-LHS loop of one design
@@ -125,7 +127,8 @@ pub struct Augmentation {
     /// [`polish`](mod@crate::polish)). `None` when the pass was
     /// disabled or skipped — a single-chunk exact run is already
     /// jointly optimal over the pass's swap space, so polishing it is
-    /// a provable no-op.
+    /// a provable no-op — unless the chunk's AE budget ran out and
+    /// voided that proof.
     pub polish: Option<PolishReport>,
     /// Audze–Eglais space-filling energy of the active point set (the
     /// designs in scope for every parameter plus the new designs, on
@@ -169,7 +172,9 @@ pub struct Augmentation {
 /// energy under a per-pair r² guard; its
 /// report is returned in [`Augmentation::polish`]. A single-chunk exact
 /// run skips the pass — exact already searched the whole assignment
-/// space, of which the descent's swap space is a subset.
+/// space under the same combined objective, of which the descent's
+/// swap space is a subset — unless the chunk's AE budget ran out
+/// mid-search, which voids the proof.
 ///
 /// # Errors
 ///
@@ -247,6 +252,27 @@ pub fn augment(
     let batch = solvable.min(m);
     let chunks = m.div_ceil(batch);
 
+    // Context points of the space-filling criterion (issue #46): the
+    // designs in scope for EVERY parameter, transformed to the unit
+    // cube — the fixed context the selection's AE tie-break spreads
+    // the new designs against at placement (issue #47) and the phase-2
+    // descent refines against after it. Evaluated designs are fixed
+    // context; only the new designs move.
+    let base_points: Vec<Vec<f64>> = designs
+        .iter()
+        .filter(|design| {
+            params
+                .iter()
+                .enumerate()
+                .all(|(j, param)| param.in_scope(design.values[j]))
+        })
+        .map(|design| {
+            (0..p)
+                .map(|j| params[j].transform(design.values[j]))
+                .collect()
+        })
+        .collect();
+
     let mut seed_bytes = [0u8; 32];
     seed_bytes[..8].copy_from_slice(&seed.to_le_bytes());
     let mut rng = ChaCha8Rng::from_seed(seed_bytes);
@@ -255,6 +281,11 @@ pub fn augment(
     // scope-transformed values for occupancy and scoring.
     let mut placed_values: Vec<Vec<f64>> = vec![Vec::new(); p];
     let mut placed_t: Vec<Vec<f64>> = vec![Vec::new(); p];
+    // Bin-center proxy rows of the placed designs (issue #47): the
+    // space-filling context the next chunk's selection sees.
+    let mut placed_rows: Vec<Vec<f64>> = Vec::new();
+    // Whether any chunk's AE budget ran out mid-search.
+    let mut ae_capped_any = false;
     let mut strategies: Vec<SelectionStrategy> = Vec::with_capacity(chunks);
     let mut last_chunk_score = 0.0;
     // Base pair series of the ORIGINAL designs, built and validated in
@@ -295,6 +326,7 @@ pub fn augment(
         let restrict = empty_cross_exceeds_budget(empties.iter().map(|e| e.len()));
 
         let mut candidates: Vec<BinCandidates> = Vec::with_capacity(p);
+        let mut chunk_centers: Vec<Vec<f64>> = Vec::with_capacity(p);
         for (j, param) in params.iter().enumerate() {
             let bins = bin_count(in_scope[j].len(), m);
             let empty = if restrict {
@@ -304,16 +336,23 @@ pub fn augment(
             };
             let mut t = Vec::with_capacity(empty.len());
             let mut values = Vec::with_capacity(empty.len());
+            // Bin-center proxy coordinates of the candidates (issue
+            // #47): values have not materialized at selection time,
+            // so the space-filling term sees the normalized bin
+            // centers instead.
+            let mut centers = Vec::with_capacity(empty.len());
             for &bin in &empty {
                 let ct = candidate_t(&mut rng, bin, bins);
                 t.push(ct);
                 values.push(param.inverse_transform(ct));
+                centers.push((bin as f64 + 0.5) / bins as f64);
             }
             candidates.push(BinCandidates {
                 bins: empty,
                 t,
                 values,
             });
+            chunk_centers.push(centers);
         }
 
         // Base pair series of the original designs (first chunk only:
@@ -331,9 +370,17 @@ pub fn augment(
             pair.ys.extend_from_slice(&placed_t[pair.b]);
         }
 
-        // Selection of the chunk.
-        let selection = select(b, &working, &candidates, cap)?;
+        // Selection of the chunk — under the combined objective: the
+        // saturated correlation key first, the space-filling energy of
+        // the bin-center proxy among exact key ties (issue #47).
+        let ae = selection::AeContext {
+            fixed: &base_points,
+            placed: &placed_rows,
+            centers: &chunk_centers,
+        };
+        let selection = select(b, &working, &candidates, cap, &ae)?;
         strategies.push(selection.strategy);
+        ae_capped_any |= selection.ae_capped;
         last_chunk_score = selection.score;
 
         // Append the chunk's designs to the placed pool.
@@ -343,28 +390,13 @@ pub fn augment(
                 placed_values[j].push(candidates[j].values[pick]);
                 placed_t[j].push(candidates[j].t[pick]);
             }
+            placed_rows.push(
+                (0..p)
+                    .map(|j| chunk_centers[j][selection.picks[j][i]])
+                    .collect(),
+            );
         }
     }
-
-    // Context points of the space-filling criterion (issue #46): the
-    // designs in scope for EVERY parameter, transformed to the unit
-    // cube — the fixed context the phase-2 descent spreads the new
-    // designs against. Evaluated designs are fixed context; only the
-    // new designs move.
-    let base_points: Vec<Vec<f64>> = designs
-        .iter()
-        .filter(|design| {
-            params
-                .iter()
-                .enumerate()
-                .all(|(j, param)| param.in_scope(design.values[j]))
-        })
-        .map(|design| {
-            (0..p)
-                .map(|j| params[j].transform(design.values[j]))
-                .collect()
-        })
-        .collect();
 
     // Post-placement refinement (issue #24): chunks are optimized one at
     // a time, so the finished assignment is improvable — greedy chunks
@@ -372,11 +404,14 @@ pub fn augment(
     // A single-chunk exact run is the exception: exact searched the whole
     // assignment space, of which the descent's swap space is a subset,
     // so polishing it is a provable no-op and is skipped to keep those
-    // outputs byte-exact. Phase 2 (issue #46) additionally descends the
-    // space-filling energy under the per-pair τ guard, breaking the
-    // zero-correlation X shapes the pooled r² cannot see.
+    // outputs byte-exact — unless the chunk's AE budget ran out, which
+    // voids the joint-optimality proof (part of the enumeration was
+    // compared on the saturated key alone). Phase 2 (issue #46)
+    // additionally descends the space-filling energy under the per-pair
+    // τ guard, breaking the zero-correlation X shapes the pooled r²
+    // cannot see.
     let strategy = SelectionStrategy::aggregate(&strategies);
-    let polish_report = if polish && !(chunks == 1 && strategy == SelectionStrategy::Exact) {
+    let polish_report = if polish_applies(polish, chunks, strategy, ae_capped_any) {
         Some(polish::polish(
             &base_pairs,
             &base_points,
@@ -429,6 +464,22 @@ pub fn augment(
         polish: polish_report,
         ae_energy,
     })
+}
+
+/// Whether the post-placement refinement pass applies (issues #24,
+/// #47): enabled, and not a single-chunk exact run — whose enumeration
+/// already searched the whole assignment space under the same combined
+/// objective, making the pass a provable no-op. A chunk whose AE budget
+/// ran out compared part of its leaves on the saturated key alone, so
+/// its result is no longer provably optimal under the combined
+/// objective and the pass applies again.
+fn polish_applies(
+    enabled: bool,
+    chunks: usize,
+    strategy: SelectionStrategy,
+    ae_capped: bool,
+) -> bool {
+    enabled && !(chunks == 1 && strategy == SelectionStrategy::Exact && !ae_capped)
 }
 
 /// Pair series for scoring: per pair, the ORIGINAL designs in scope for
@@ -526,6 +577,50 @@ pub fn explore(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn polish_applies_unless_single_chunk_exact_under_the_combined_objective() {
+        use SelectionStrategy::{Exact, Greedy};
+        // disabled: never
+        assert!(!polish_applies(false, 1, Greedy, false));
+        assert!(!polish_applies(false, 1, Exact, true));
+        // greedy and batched runs: always
+        assert!(polish_applies(true, 1, Greedy, false));
+        assert!(polish_applies(true, 5, Exact, false));
+        assert!(polish_applies(true, 2, Greedy, true));
+        // a single-chunk exact run is a provable no-op under the
+        // combined objective — unless its AE budget ran out mid-search,
+        // which voids the joint-optimality proof
+        assert!(!polish_applies(true, 1, Exact, false));
+        assert!(polish_applies(true, 1, Exact, true));
+    }
+
+    #[test]
+    fn selection_spreads_fresh_explores_without_polish() {
+        // issue #47's user direction: the X defect must be addressed at
+        // placement, without the polish pass. Fresh 2-parameter pool,
+        // greedy selection (cap 0), polish disabled: the finished point
+        // set must beat the space-filling energy of the anti-symmetric
+        // X construction on the same bins (four points per arm, two
+        // crossing lines).
+        let params = vec![
+            Parameter::uniform("x", 0.0, 10.0).unwrap(),
+            Parameter::uniform("y", 0.0, 10.0).unwrap(),
+        ];
+        let aug = explore(&params, &[], 8, 42, 0, false).unwrap();
+        assert_eq!(aug.strategy, SelectionStrategy::Greedy);
+        assert!(aug.polish.is_none(), "polish must stay disabled");
+        let x_rows: Vec<Vec<f64>> = (0..8)
+            .map(|i| vec![(i as f64 + 0.5) / 8.0, (7.0 - i as f64 + 0.5) / 8.0])
+            .collect();
+        let x_energy = space::ae_energy(&x_rows);
+        assert!(
+            aug.ae_energy < x_energy,
+            "selection alone must beat the X: {} vs {}",
+            aug.ae_energy,
+            x_energy
+        );
+    }
 
     #[test]
     fn polish_reports_for_greedy_runs_and_never_worsens() {
@@ -814,21 +909,35 @@ mod tests {
 
         let aug = explore(&params, &designs, 3, 42, 1_000_000, false).unwrap();
         assert_eq!(aug.new_designs.len(), 3);
-        // 6 equal-width bins over the full [0, 10]; the three designs share
-        // one bin, so the first three empty bins are 0, 1, 2 (single
-        // parameter: no pairs, enumeration ties resolve lexicographically)
+        // 6 equal-width bins over the full [0, 10]; the three designs
+        // share bin 3 ([5.0, 6.67)), so the new values must land in
+        // empty bins of the full range — never in the dense bin. Which
+        // empty bins the combined objective picks is its own choice
+        // (single parameter: no pairs, the AE tie-break spreads the
+        // set away from the cluster); the Latin Hypercube property is
+        // what must hold.
         for design in &aug.new_designs {
             assert!(
                 (0.0..10.0).contains(&design.values[0]),
                 "{} outside the definition range",
                 design.values[0]
             );
-            assert!(
-                design.values[0] < 5.0,
+            let bin = (design.values[0] / 10.0 * 6.0) as usize;
+            assert_ne!(
+                bin, 3,
                 "{} inside the dense bin of the existing designs",
                 design.values[0]
             );
         }
+        // Latin Hypercube: one design per bin
+        let mut bins: Vec<usize> = aug
+            .new_designs
+            .iter()
+            .map(|d| (d.values[0] / 10.0 * 6.0) as usize)
+            .collect();
+        bins.sort_unstable();
+        bins.dedup();
+        assert_eq!(bins.len(), 3, "designs share bins");
         // the new values lie outside the scope — that is the point of
         // explore mode
         assert!(

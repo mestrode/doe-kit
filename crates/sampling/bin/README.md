@@ -108,7 +108,9 @@ and batched run — including batched
 runs of exact chunks, which are per-chunk optimal but never jointly —
 and is skipped only for single-chunk exact runs, which it provably
 cannot improve (the exact enumeration already searched the same
-assignment space). Each phase stops at convergence (a sweep without an
+assignment space under the same combined objective) — unless the
+chunk's AE tie-break budget ran out mid-search, which voids the
+proof and re-enables the pass. Each phase stops at convergence (a sweep without an
 improving swap) or after a bounded evaluation budget. The human summary
 appends `, polished with N swap(s) (r2 was S, AE was E)` when swaps
 were applied (N counts both phases, S is the pooled pair r² and E the
@@ -204,7 +206,8 @@ evaluated count and the context number of designs per parameter:
    between candidate pools — run `--explore` with a different `--seed`
    and compare; lower is better.
 3. The pooled pair r2: the sum of squared Pearson correlations over
-   all parameter pairs — the score `plhs` optimizes and reports as
+   all parameter pairs — the correlation criterion `plhs` optimizes
+   (each pair floored at the null τ during selection) and reports as
    `score S`, readable back on the pool (identical on pools without
    scopes; `plhs` scores the in-scope series). Pairs with an undefined
    correlation count as 0, as in the plhs scoring; n/a when no pair

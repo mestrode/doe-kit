@@ -1,23 +1,48 @@
 //! Combination selection: choose the assignment of `m` new designs to empty
-//! bins — one distinct empty bin per parameter and design — with the lowest
-//! score.
+//! bins — one distinct empty bin per parameter and design — that is best
+//! under the combined objective (issue #47): the saturated correlation
+//! key of [`crate::space`] first (every pair's r² floored at
+//! [`SELECTION_TAU`](crate::space::SELECTION_TAU)), and among exact
+//! ties of the key the lower Audze–Eglais energy, evaluated on the
+//! bin-center proxy (see [`AeContext`]). A pooled-r²-only comparison
+//! is structurally blind inside the null-correlation manifold — the X
+//! defect — so the space-filling term decides there.
 //!
 //! Two strategies:
 //!
 //! - **Exact enumeration** when the number of assignments
-//!   `prod_j P(k_j, m)` does not exceed the configured cap; every assignment
-//!   is scored and the best (ties resolved by the first in lexicographic
-//!   order) wins.
+//!   `prod_j P(k_j, m)` does not exceed the configured cap; every
+//!   assignment is scored and the best (ties resolved by the first in
+//!   lexicographic order) wins.
 //! - **Greedy fallback** above the cap: designs are placed one at a time,
-//!   each choosing the unused bin combination that minimizes the score of
-//!   all designs placed so far (again deterministic, ties to the
-//!   lexicographically first combination).
+//!   each choosing the unused bin combination that minimizes the
+//!   combined objective of all designs placed so far (again
+//!   deterministic, ties to the lexicographically first combination).
+//!
+//! The space-filling term costs one distance evaluation per
+//! (candidate, context point) pair per leaf, so both strategies run it
+//! under the per-chunk budget [`AE_BUDGET`]. Once the budget is spent
+//! the remaining leaves compare on the saturated key alone and the
+//! selection reports `ae_capped` — which voids the single-chunk-exact
+//! no-op proof of the polish pass (see [`crate::augment`]).
 
 use crate::error::{Error, Result};
-use crate::scoring::{PairSeries, assignment_score, assignment_score_with};
+use crate::scoring::{PairSeries, assignment_pair_r2s_with, assignment_score};
+use crate::space;
 
 /// Upper bound on the empty-bin cross product searched per greedy step.
 const GREEDY_CROSS_CAP: u128 = 10_000_000;
+
+/// Per-chunk budget of AE distance terms (one pairwise point distance
+/// evaluation each) for the combined-objective comparison, shared by
+/// the exact and the greedy path. Sized to cover the primary workflows
+/// in full — a fresh explore of a few hundred designs at up to three
+/// parameters stays well inside — while huge batched runs degrade
+/// instead of exploding: after the budget is spent, the remaining
+/// leaves compare on the saturated key alone and the chunk reports
+/// `ae_capped`, which also re-enables the polish pass on an otherwise
+/// provably optimal exact chunk.
+const AE_BUDGET: u128 = 2_000_000_000;
 
 /// Up to this many placed designs, the greedy fallback scores every leaf
 /// with the reference two-pass scorer ([`assignment_score_with`]); beyond
@@ -76,28 +101,74 @@ impl SelectionStrategy {
     }
 }
 
+/// The space-filling context of a selection (issue #47): the fixed
+/// points of the AE criterion and the bin-center proxy coordinates of
+/// everything the search moves. Values have not materialized at
+/// selection time — the new designs are represented by the normalized
+/// bin centers of their candidate bins, a sound proxy because the
+/// X-shaped null-correlation defect lives at bin granularity (a
+/// permutation property); within-bin value draws neither cause nor
+/// cure it, so they stay out of the objective.
+#[derive(Debug, Clone, Copy)]
+pub struct AeContext<'a> {
+    /// Fixed context rows: the original designs in scope for every
+    /// parameter, transformed to the unit cube. Constant for the
+    /// whole run.
+    pub fixed: &'a [Vec<f64>],
+    /// Rows of the designs earlier chunks placed, at the normalized
+    /// bin centers of their chosen bins.
+    pub placed: &'a [Vec<f64>],
+    /// Per parameter, the normalized bin-center coordinate of each
+    /// candidate, aligned with [`BinCandidates::bins`].
+    pub centers: &'a [Vec<f64>],
+}
+
 /// The chosen assignment.
 #[derive(Debug, Clone)]
 pub struct Selection {
-    /// Per parameter: the chosen candidate index (into [`BinCandidates`])
-    /// for each new design.
+    /// Per parameter: the chosen candidate index (into [`BinCandidates`]) for each new design.
     pub picks: Vec<Vec<usize>>,
-    /// Score of the chosen assignment.
+    /// Score of the chosen assignment: the pooled pair r². The
+    /// comparison that chose the assignment runs on the combined
+    /// objective (saturated key, then AE); the pooled r² stays the
+    /// reported score so the `plhs` score remains readable back from
+    /// the pool statistics.
     pub score: f64,
     /// The strategy that produced this selection.
     pub strategy: SelectionStrategy,
+    /// Whether the chunk's AE budget ran out mid-search, leaving part
+    /// of the leaves compared on the saturated key alone — which voids
+    /// the joint-optimality proof a single-chunk exact run otherwise
+    /// carries.
+    pub(crate) ae_capped: bool,
 }
 
-/// Selects the best assignment of `m` new designs to the empty bins.
+/// Selects the best assignment of `m` new designs to the empty bins
+/// under the combined objective.
 ///
 /// `candidates` holds the empty-bin candidates per parameter; `pairs` holds
 /// the in-scope series used for scoring. `cap` is the maximum number of
-/// assignments to enumerate exactly.
+/// assignments to enumerate exactly. `ae` supplies the space-filling
+/// context of the AE tie-break.
 pub fn select(
     m: usize,
     pairs: &[PairSeries],
     candidates: &[BinCandidates],
     cap: u64,
+    ae: &AeContext,
+) -> Result<Selection> {
+    select_budgeted(m, pairs, candidates, cap, ae, AE_BUDGET)
+}
+
+/// The budgeted core of [`select`], exposed for tests: `ae_budget` is
+/// the chunk's AE distance-term allowance.
+pub(crate) fn select_budgeted(
+    m: usize,
+    pairs: &[PairSeries],
+    candidates: &[BinCandidates],
+    cap: u64,
+    ae: &AeContext,
+    ae_budget: u128,
 ) -> Result<Selection> {
     for (j, c) in candidates.iter().enumerate() {
         if c.bins.len() < m {
@@ -112,19 +183,17 @@ pub fn select(
         candidates.iter().map(|c| perm_count(c.bins.len(), m)),
         u128::from(cap),
     );
-    let run = if exact {
-        enumerate(m, pairs, candidates)
+    let mut sel = if exact {
+        enumerate(m, pairs, candidates, ae, ae_budget)
     } else {
-        greedy(m, pairs, candidates)
+        greedy(m, pairs, candidates, ae, ae_budget)
+    }?;
+    sel.strategy = if exact {
+        SelectionStrategy::Exact
+    } else {
+        SelectionStrategy::Greedy
     };
-    run.map(|mut sel| {
-        sel.strategy = if exact {
-            SelectionStrategy::Exact
-        } else {
-            SelectionStrategy::Greedy
-        };
-        sel
-    })
+    Ok(sel)
 }
 
 /// Whether the product of `factors` exceeds `threshold`, deciding exactly
@@ -193,7 +262,96 @@ pub(crate) fn empty_cross_exceeds_budget(counts: impl Iterator<Item = usize>) ->
     product_exceeds(counts.map(|c| c as u128), GREEDY_CROSS_CAP)
 }
 
+// --- space-filling term -------------------------------------------------------
+
+/// Squared Euclidean distance of two unit-cube rows.
+fn dist2(a: &[f64], b: &[f64]) -> f64 {
+    a.iter()
+        .zip(b)
+        .map(|(&x, &y)| {
+            let d = x - y;
+            d * d
+        })
+        .sum()
+}
+
+/// Sum of AE terms over all unordered pairs of `points`.
+fn pair_sum(points: &[Vec<f64>]) -> f64 {
+    let mut sum = 0.0;
+    for a in 0..points.len() {
+        for b in (a + 1)..points.len() {
+            sum += space::ae_term(dist2(&points[a], &points[b]));
+        }
+    }
+    sum
+}
+
+/// Sum of AE terms between one trial row and every context row — the
+/// part of the energy that varies between greedy leaves (the energy
+/// among the context rows is constant during a step and cancels in
+/// every comparison).
+fn cross_row_sum(rows: &[Vec<f64>], trial: &[f64]) -> f64 {
+    rows.iter().map(|r| space::ae_term(dist2(trial, r))).sum()
+}
+
+/// Sum of AE terms between every trial row and every context row.
+fn cross_sum(rows: &[Vec<f64>], trial: &[Vec<f64>]) -> f64 {
+    trial.iter().map(|t| cross_row_sum(rows, t)).sum()
+}
+
+/// Remaining AE distance terms of one chunk's search.
+struct AeBudget {
+    left: u128,
+    capped: bool,
+}
+
+impl AeBudget {
+    fn new(budget: u128) -> Self {
+        Self {
+            left: budget,
+            capped: false,
+        }
+    }
+
+    /// Charges `terms` and reports whether they were affordable; the
+    /// first unaffordable charge exhausts the budget permanently.
+    fn charge(&mut self, terms: u128) -> bool {
+        if self.capped {
+            return false;
+        }
+        if terms > self.left {
+            self.capped = true;
+            self.left = 0;
+            return false;
+        }
+        self.left -= terms;
+        true
+    }
+}
+
+/// The combined-objective comparison of one leaf against the incumbent:
+/// a lower saturated key wins outright; on an exact key tie the lower
+/// AE energy wins; with either AE unknown (budget exhausted) the
+/// incumbent stays on a tie. Ties on both keep the incumbent, so the
+/// first leaf in enumeration order wins — the historical determinism.
+fn leaf_better(key: f64, ae: Option<f64>, best_key: f64, best_ae: Option<f64>) -> bool {
+    match (ae, best_ae) {
+        (Some(a), Some(b)) => space::saturated_better(key, a, best_key, b),
+        _ => key < best_key,
+    }
+}
+
 // --- exact enumeration ------------------------------------------------------
+
+/// The incumbent of a search: the chosen picks with the pooled score
+/// (reported) and the combined-objective key and AE energy used to
+/// compare leaves.
+struct Best {
+    picks: Vec<Vec<usize>>,
+    score: f64,
+    key: f64,
+    ae: Option<f64>,
+}
 
 struct Enumerator<'a> {
     m: usize,
@@ -203,26 +361,52 @@ struct Enumerator<'a> {
     picks: Vec<Vec<usize>>,
     /// Scratch: transformed candidate values per param/design.
     cand: Vec<Vec<f64>>,
+    /// Scratch: bin-center proxy rows of the trial, `trial[design]`.
+    trial: Vec<Vec<f64>>,
     xs: Vec<f64>,
     ys: Vec<f64>,
-    best: Option<Selection>,
+    r2s: Vec<f64>,
+    /// AE context rows: fixed originals plus earlier chunks' placements.
+    rows: Vec<Vec<f64>>,
+    centers: &'a [Vec<f64>],
+    budget: AeBudget,
+    best: Option<Best>,
 }
 
-fn enumerate(m: usize, pairs: &[PairSeries], candidates: &[BinCandidates]) -> Result<Selection> {
+fn enumerate(
+    m: usize,
+    pairs: &[PairSeries],
+    candidates: &[BinCandidates],
+    ae: &AeContext,
+    ae_budget: u128,
+) -> Result<Selection> {
     let p = candidates.len();
+    let mut rows = ae.fixed.to_vec();
+    rows.extend_from_slice(ae.placed);
     let mut state = Enumerator {
         m,
         pairs,
         candidates,
         picks: vec![vec![0; m]; p],
         cand: vec![vec![0.0; m]; p],
+        trial: vec![vec![0.0; p]; m],
         xs: Vec::new(),
         ys: Vec::new(),
+        r2s: Vec::new(),
+        rows,
+        centers: ae.centers,
+        budget: AeBudget::new(ae_budget),
         best: None,
     };
     state.rec_param(0);
     state
         .best
+        .map(|b| Selection {
+            picks: b.picks,
+            score: b.score,
+            strategy: SelectionStrategy::Exact,
+            ae_capped: state.budget.capped,
+        })
         .ok_or_else(|| Error::Invariant("empty search space".to_owned()))
 }
 
@@ -250,20 +434,46 @@ impl Enumerator<'_> {
             used[idx] = true;
             self.picks[j][slot] = idx;
             self.cand[j][slot] = self.candidates[j].t[idx];
+            self.trial[slot][j] = self.centers[j][idx];
             self.rec_slot(j, slot + 1, used);
             used[idx] = false;
         }
     }
 
     fn score_leaf(&mut self) {
-        let score =
-            assignment_score_with(self.pairs, &self.cand, self.m, &mut self.xs, &mut self.ys);
-        let better = self.best.as_ref().is_none_or(|b| score < b.score);
+        assignment_pair_r2s_with(
+            self.pairs,
+            &self.cand,
+            self.m,
+            &mut self.xs,
+            &mut self.ys,
+            &mut self.r2s,
+        );
+        let score: f64 = self.r2s.iter().sum();
+        let key = space::sat_key(&self.r2s);
+        let ae = match self.best.as_ref() {
+            // a strictly worse key loses without a space-filling look
+            Some(b) if key > b.key => None,
+            _ => {
+                let terms = u128::try_from(self.rows.len() * self.m).unwrap_or(u128::MAX)
+                    + u128::try_from(self.m * (self.m - 1) / 2).unwrap_or(u128::MAX);
+                if self.budget.charge(terms) {
+                    Some(cross_sum(&self.rows, &self.trial) + pair_sum(&self.trial))
+                } else {
+                    None
+                }
+            }
+        };
+        let better = match self.best.as_ref() {
+            None => true,
+            Some(b) => leaf_better(key, ae, b.key, b.ae),
+        };
         if better {
-            self.best = Some(Selection {
+            self.best = Some(Best {
                 picks: self.picks.clone(),
                 score,
-                strategy: SelectionStrategy::Exact,
+                key,
+                ae,
             });
         }
     }
@@ -335,20 +545,20 @@ impl PairSums {
     }
 }
 
-/// Greedy score of placing design `design` on top of the accumulated
-/// `sums`: the sum of squared pair correlations over all pairs, each in
-/// O(1). `cand[j][design]` holds the candidate value under trial.
-fn incremental_score(
+/// Greedy per-pair r² of placing design `design` on top of the
+/// accumulated `sums`: each pair in O(1) from the running raw sums.
+/// `cand[j][design]` holds the candidate value under trial.
+fn incremental_pair_r2s(
     pairs: &[PairSeries],
     sums: &[PairSums],
     cand: &[Vec<f64>],
     design: usize,
-) -> f64 {
-    let mut score = 0.0;
+    out: &mut Vec<f64>,
+) {
+    out.clear();
     for (pair, sums) in pairs.iter().zip(sums.iter()) {
-        score += sums.r2_with(cand[pair.a][design], cand[pair.b][design]);
+        out.push(sums.r2_with(cand[pair.a][design], cand[pair.b][design]));
     }
-    score
 }
 
 struct Greedy<'a> {
@@ -361,14 +571,30 @@ struct Greedy<'a> {
     cand: Vec<Vec<f64>>,
     xs: Vec<f64>,
     ys: Vec<f64>,
+    r2s: Vec<f64>,
+    /// AE context rows: fixed originals, earlier chunks' placements and
+    /// the designs this chunk already committed — every trial is
+    /// compared against all of them.
+    rows: Vec<Vec<f64>>,
+    centers: &'a [Vec<f64>],
+    /// Scratch: bin-center proxy coordinates of the current trial.
+    trial: Vec<f64>,
+    budget: AeBudget,
     /// The new design currently being placed.
     design: usize,
     /// The bin combination currently being tried.
     tuple: Vec<usize>,
-    best: Option<(Vec<usize>, f64)>,
+    /// The step's incumbent: `(tuple, saturated key, AE energy)`.
+    best: Option<(Vec<usize>, f64, Option<f64>)>,
 }
 
-fn greedy(m: usize, pairs: &[PairSeries], candidates: &[BinCandidates]) -> Result<Selection> {
+fn greedy(
+    m: usize,
+    pairs: &[PairSeries],
+    candidates: &[BinCandidates],
+    ae: &AeContext,
+    ae_budget: u128,
+) -> Result<Selection> {
     if product_exceeds(
         candidates.iter().map(|c| c.bins.len() as u128),
         GREEDY_CROSS_CAP,
@@ -395,6 +621,8 @@ fn greedy(m: usize, pairs: &[PairSeries], candidates: &[BinCandidates]) -> Resul
         )));
     }
     let p = candidates.len();
+    let mut rows = ae.fixed.to_vec();
+    rows.extend_from_slice(ae.placed);
     let mut state = Greedy {
         pairs,
         candidates,
@@ -410,6 +638,11 @@ fn greedy(m: usize, pairs: &[PairSeries], candidates: &[BinCandidates]) -> Resul
         cand: vec![vec![0.0; m]; p],
         xs: Vec::new(),
         ys: Vec::new(),
+        r2s: Vec::new(),
+        rows,
+        centers: ae.centers,
+        trial: vec![0.0; p],
+        budget: AeBudget::new(ae_budget),
         design: 0,
         tuple: vec![0; p],
         best: None,
@@ -418,7 +651,7 @@ fn greedy(m: usize, pairs: &[PairSeries], candidates: &[BinCandidates]) -> Resul
         state.design = i;
         state.best = None;
         state.rec(0);
-        let (chosen, _) = state
+        let (chosen, _, _) = state
             .best
             .take()
             .ok_or_else(|| Error::Invariant("empty search space".to_owned()))?;
@@ -429,6 +662,7 @@ fn greedy(m: usize, pairs: &[PairSeries], candidates: &[BinCandidates]) -> Resul
         picks: state.picks.clone(),
         score,
         strategy: SelectionStrategy::Greedy,
+        ae_capped: state.budget.capped,
     })
 }
 
@@ -437,16 +671,46 @@ impl Greedy<'_> {
         if j == self.candidates.len() {
             for jj in 0..j {
                 self.cand[jj][self.design] = self.candidates[jj].t[self.tuple[jj]];
+                self.trial[jj] = self.centers[jj][self.tuple[jj]];
             }
             let placed = self.design + 1;
-            let score = if placed <= REFERENCE_SCORING_PLACED_LIMIT {
-                assignment_score_with(self.pairs, &self.cand, placed, &mut self.xs, &mut self.ys)
+            if placed <= REFERENCE_SCORING_PLACED_LIMIT {
+                assignment_pair_r2s_with(
+                    self.pairs,
+                    &self.cand,
+                    placed,
+                    &mut self.xs,
+                    &mut self.ys,
+                    &mut self.r2s,
+                );
             } else {
-                incremental_score(self.pairs, &self.sums, &self.cand, self.design)
+                incremental_pair_r2s(
+                    self.pairs,
+                    &self.sums,
+                    &self.cand,
+                    self.design,
+                    &mut self.r2s,
+                );
+            }
+            let key = space::sat_key(&self.r2s);
+            let ae = match self.best.as_ref() {
+                // a strictly worse key loses without a space-filling look
+                Some((_, best_key, _)) if key > *best_key => None,
+                _ => {
+                    let terms = u128::try_from(self.rows.len()).unwrap_or(u128::MAX);
+                    if self.budget.charge(terms) {
+                        Some(cross_row_sum(&self.rows, &self.trial))
+                    } else {
+                        None
+                    }
+                }
             };
-            let better = self.best.as_ref().is_none_or(|(_, s)| score < *s);
+            let better = match self.best.as_ref() {
+                None => true,
+                Some((_, best_key, best_ae)) => leaf_better(key, ae, *best_key, *best_ae),
+            };
             if better {
-                self.best = Some((self.tuple.clone(), score));
+                self.best = Some((self.tuple.clone(), key, ae));
             }
             return;
         }
@@ -471,6 +735,12 @@ impl Greedy<'_> {
             let (x, y) = (self.cand[pair.a][design], self.cand[pair.b][design]);
             sums.push(x, y);
         }
+        // the placed design joins the space-filling context at its
+        // bin-center proxy position
+        let row: Vec<f64> = (0..self.centers.len())
+            .map(|j| self.centers[j][chosen[j]])
+            .collect();
+        self.rows.push(row);
     }
 }
 
@@ -504,12 +774,13 @@ mod tests {
         // 2 params, 3 empty bins each, m = 2: P(3, 2)^2 = 36 <= cap
         let cands = candidates(&[(vec![1, 4, 7], 0.0), (vec![2, 5, 8], 0.0)]);
         let pairs = vec![pair_series(0, 1, vec![0.1, 0.4, 0.9], vec![0.9, 0.6, 0.1])];
-        let sel = select(2, &pairs, &cands, 1_000_000).unwrap();
+        let ae = ae_of(&cands);
+        let sel = select(2, &pairs, &cands, 1_000_000, &ae).unwrap();
         assert_eq!(sel.strategy, SelectionStrategy::Exact);
         assert_eq!(sel.strategy.name(), "exact");
 
         // the same setup with cap 0 always exceeds the cap: greedy runs
-        let sel = select(2, &pairs, &cands, 0).unwrap();
+        let sel = select(2, &pairs, &cands, 0, &ae).unwrap();
         assert_eq!(sel.strategy, SelectionStrategy::Greedy);
         assert_eq!(sel.strategy.name(), "greedy");
     }
@@ -519,24 +790,11 @@ mod tests {
         // 2 params, 3 empty bins each, m = 2
         let cands = candidates(&[(vec![1, 4, 7], 0.0), (vec![2, 5, 8], 0.0)]);
         let pairs = vec![pair_series(0, 1, vec![0.1, 0.4, 0.9], vec![0.9, 0.6, 0.1])];
-        let sel = select(2, &pairs, &cands, 1_000_000).unwrap();
+        let ae = ae_of(&cands);
+        let sel = select(2, &pairs, &cands, 1_000_000, &ae).unwrap();
         for j in 0..2 {
             assert_ne!(sel.picks[j][0], sel.picks[j][1]);
         }
-    }
-
-    #[test]
-    fn greedy_matches_enumeration_when_both_feasible() {
-        let cands = candidates(&[(vec![1, 4, 7], 0.0), (vec![2, 5, 8], 0.05)]);
-        let pairs = vec![pair_series(
-            0,
-            1,
-            vec![0.1, 0.4, 0.55, 0.9],
-            vec![0.9, 0.6, 0.45, 0.1],
-        )];
-        let exact = select(2, &pairs, &cands, 1_000_000).unwrap();
-        let greedy_sel = select(2, &pairs, &cands, 1).unwrap();
-        assert!((exact.score - greedy_sel.score).abs() < 1e-12);
     }
 
     #[test]
@@ -549,7 +807,8 @@ mod tests {
             vec![0.1, 0.4, 0.55, 0.9],
             vec![0.9, 0.6, 0.45, 0.1],
         )];
-        let sel = select(2, &pairs, &cands, 0).unwrap();
+        let ae = ae_of(&cands);
+        let sel = select(2, &pairs, &cands, 0, &ae).unwrap();
         for j in 0..2 {
             assert_ne!(sel.picks[j][0], sel.picks[j][1]);
         }
@@ -559,7 +818,8 @@ mod tests {
     fn rejects_fewer_empty_bins_than_designs() {
         let cands = candidates(&[(vec![3], 0.0)]);
         let pairs: Vec<PairSeries> = vec![];
-        assert!(select(2, &pairs, &cands, 1_000_000).is_err());
+        let ae = ae_of(&cands);
+        assert!(select(2, &pairs, &cands, 1_000_000, &ae).is_err());
     }
 
     #[test]
@@ -635,7 +895,7 @@ mod tests {
         let bins: Vec<usize> = (0..6).collect();
         let cands = candidates(&(0..50).map(|_| (bins.clone(), 0.0)).collect::<Vec<_>>());
         let pairs: Vec<PairSeries> = vec![];
-        let err = select(6, &pairs, &cands, 0).unwrap_err();
+        let err = select(6, &pairs, &cands, 0, &ae_of(&cands)).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("10^39"),
@@ -663,10 +923,168 @@ mod tests {
         );
     }
 
+    // --- combined objective (issue #47) --------------------------------
+
+    /// Bin-center proxy coordinates for the tests: `(b + 0.5) / n` on
+    /// the unit cube.
+    fn centers_grid(bins_per_param: &[usize]) -> Vec<Vec<f64>> {
+        bins_per_param
+            .iter()
+            .map(|&n| (0..n).map(|b| (b as f64 + 0.5) / n as f64).collect())
+            .collect()
+    }
+
+    /// A neutral AE context over the given candidates: each candidate's
+    /// drawn value doubles as its proxy coordinate. The owned centers
+    /// are leaked into the test process — `AeContext` borrows them and
+    /// each test allocates a few dozen floats.
+    fn ae_of(cands: &[BinCandidates]) -> AeContext<'static> {
+        let centers: Vec<Vec<f64>> = cands.iter().map(|c| c.t.clone()).collect();
+        AeContext {
+            fixed: &[],
+            placed: &[],
+            centers: Box::leak(centers.into_boxed_slice()),
+        }
+    }
+
     #[test]
-    fn incremental_score_matches_the_reference_scorer() {
+    fn exact_breaks_null_score_ties_by_space_filling() {
+        // m = 1 on an empty pair series: every one of the 16 bin tuples
+        // has a single-sample series, so every r^2 is exactly 0.0 — the
+        // pure-r^2 comparator cannot tell the tuples apart and keeps
+        // the lexicographically first. The combined objective must
+        // instead spread the one new point away from the fixed context
+        // point at (0.5, 0.2): the unique lowest-AE tuples are the
+        // (bin 0, bin 3) and (bin 3, bin 3) corners (tied by symmetry),
+        // and the lexicographically first of those wins.
+        let cands = candidates(&[(vec![0, 1, 2, 3], 0.0), (vec![0, 1, 2, 3], 0.0)]);
+        let pairs = vec![pair_series(0, 1, Vec::new(), Vec::new())];
+        let centers = centers_grid(&[4, 4]);
+        let fixed = vec![vec![0.5, 0.2]];
+        let ae = AeContext {
+            fixed: &fixed,
+            placed: &[],
+            centers: &centers,
+        };
+        let sel = select(1, &pairs, &cands, 1_000_000, &ae).unwrap();
+        assert_eq!(sel.strategy, SelectionStrategy::Exact);
+        assert_eq!(
+            (sel.picks[0][0], sel.picks[1][0]),
+            (0, 3),
+            "exact must break the null-score tie by space-filling"
+        );
+        assert!(!sel.ae_capped);
+    }
+
+    #[test]
+    fn greedy_breaks_null_score_ties_by_space_filling() {
+        // the same tie under the greedy fallback (cap 0 forces it)
+        let cands = candidates(&[(vec![0, 1, 2, 3], 0.0), (vec![0, 1, 2, 3], 0.0)]);
+        let pairs = vec![pair_series(0, 1, Vec::new(), Vec::new())];
+        let centers = centers_grid(&[4, 4]);
+        let fixed = vec![vec![0.5, 0.2]];
+        let ae = AeContext {
+            fixed: &fixed,
+            placed: &[],
+            centers: &centers,
+        };
+        let sel = select(1, &pairs, &cands, 0, &ae).unwrap();
+        assert_eq!(sel.strategy, SelectionStrategy::Greedy);
+        assert_eq!(
+            (sel.picks[0][0], sel.picks[1][0]),
+            (0, 3),
+            "greedy must break the null-score tie by space-filling"
+        );
+        assert!(!sel.ae_capped);
+    }
+
+    #[test]
+    fn ae_budget_caps_the_comparison_and_reports_it() {
+        // the same null-tie setup: with no AE budget at all, the
+        // comparison degrades to the saturated key alone — every key
+        // ties, so the lexicographically first tuple wins (the
+        // pre-combined-objective behaviour) — and the chunk reports
+        // that it was capped
+        let cands = candidates(&[(vec![0, 1, 2, 3], 0.0), (vec![0, 1, 2, 3], 0.0)]);
+        let pairs = vec![pair_series(0, 1, Vec::new(), Vec::new())];
+        let centers = centers_grid(&[4, 4]);
+        let fixed = vec![vec![0.5, 0.2]];
+        let ae = AeContext {
+            fixed: &fixed,
+            placed: &[],
+            centers: &centers,
+        };
+        let exact = select_budgeted(1, &pairs, &cands, 1_000_000, &ae, 0).unwrap();
+        assert_eq!((exact.picks[0][0], exact.picks[1][0]), (0, 0));
+        assert!(exact.ae_capped, "the exhausted budget must be reported");
+        let greedy = select_budgeted(1, &pairs, &cands, 0, &ae, 0).unwrap();
+        assert_eq!((greedy.picks[0][0], greedy.picks[1][0]), (0, 0));
+        assert!(greedy.ae_capped);
+        // a generous budget restores the space-filling tie-break
+        let funded = select_budgeted(1, &pairs, &cands, 1_000_000, &ae, 1_000_000).unwrap();
+        assert_eq!((funded.picks[0][0], funded.picks[1][0]), (0, 3));
+        assert!(!funded.ae_capped);
+    }
+
+    #[test]
+    fn exact_prefers_spread_assignments_on_a_fresh_pool() {
+        // 2 parameters, 3 empty bins, m = 3, no base series: all 36
+        // assignments are exactly r^2-null (single-sample pairs), so
+        // the AE tie-break alone decides. The lexicographically first
+        // assignment is the main diagonal (all three points on
+        // y = x, the worst spread); the combined objective must pick
+        // one with strictly lower AE.
+        let cands = candidates(&[(vec![0, 1, 2], 0.0), (vec![0, 1, 2], 0.0)]);
+        let pairs = vec![pair_series(0, 1, Vec::new(), Vec::new())];
+        let centers = centers_grid(&[3, 3]);
+        let ae = AeContext {
+            fixed: &[],
+            placed: &[],
+            centers: &centers,
+        };
+        let sel = select(3, &pairs, &cands, 1_000_000, &ae).unwrap();
+        assert_eq!(sel.strategy, SelectionStrategy::Exact);
+        let diagonal: Vec<Vec<f64>> = (0..3).map(|i| centers[0][i..i + 1].to_vec()).collect();
+        let diagonal_energy = crate::space::ae_energy(&diagonal);
+        let chosen: Vec<Vec<f64>> = (0..3)
+            .map(|i| vec![centers[0][sel.picks[0][i]], centers[1][sel.picks[1][i]]])
+            .collect();
+        let chosen_energy = crate::space::ae_energy(&chosen);
+        assert!(
+            chosen_energy < diagonal_energy - 0.1,
+            "chosen AE {chosen_energy} must beat the diagonal {diagonal_energy}"
+        );
+    }
+
+    #[test]
+    fn greedy_scores_within_the_tau_headroom_of_exact() {
+        // exact minimizes the saturated key over every assignment, and
+        // a key never exceeds the pooled score by more than one floor
+        // per pair — so exact's pooled score cannot exceed greedy's by
+        // more than pairs * SELECTION_TAU, whichever way the AE
+        // tie-break trades within the floor
+        let cands = candidates(&[(vec![1, 4, 7], 0.0), (vec![2, 5, 8], 0.05)]);
+        let pairs = vec![pair_series(
+            0,
+            1,
+            vec![0.1, 0.4, 0.55, 0.9],
+            vec![0.9, 0.6, 0.45, 0.1],
+        )];
+        let ae = ae_of(&cands);
+        let exact = select(2, &pairs, &cands, 1_000_000, &ae).unwrap();
+        let greedy_sel = select(2, &pairs, &cands, 1, &ae).unwrap();
+        assert!(
+            exact.score <= greedy_sel.score + crate::space::SELECTION_TAU + 1e-9,
+            "exact {} vs greedy {}",
+            exact.score,
+            greedy_sel.score
+        );
+    }
+
+    #[test]
+    fn incremental_pair_r2s_match_the_reference_scorer() {
         // a pair with a non-empty base series plus 30 placed designs: the
-        // O(1) incremental scorer must track the two-pass reference
+        // O(1) incremental per-pair scorer must track the two-pass reference
         // scorer to within float rounding
         let xs = vec![0.1, 0.4, 0.55, 0.9];
         let ys = vec![0.9, 0.6, 0.45, 0.1];
@@ -679,15 +1097,18 @@ mod tests {
             })
             .collect();
         let mut sums = vec![PairSums::new(&pairs[0].xs, &pairs[0].ys)];
-        let mut rx = Vec::new();
-        let mut ry = Vec::new();
+        let (mut rx, mut ry, mut rr) = (Vec::new(), Vec::new(), Vec::new());
+        let mut incremental = Vec::new();
         for i in 0..30 {
-            let incremental = incremental_score(&pairs, &sums, &cand, i);
-            let reference = assignment_score_with(&pairs, &cand, i + 1, &mut rx, &mut ry);
-            assert!(
-                (incremental - reference).abs() < 1e-9,
-                "design {i}: incremental={incremental} reference={reference}"
-            );
+            incremental_pair_r2s(&pairs, &sums, &cand, i, &mut incremental);
+            assignment_pair_r2s_with(&pairs, &cand, i + 1, &mut rx, &mut ry, &mut rr);
+            assert_eq!(incremental.len(), rr.len());
+            for (a, b) in incremental.iter().zip(rr.iter()) {
+                assert!(
+                    (a - b).abs() < 1e-9,
+                    "design {i}: incremental={a} reference={b}"
+                );
+            }
             sums[0].push(cand[0][i], cand[1][i]);
         }
     }
@@ -705,7 +1126,7 @@ mod tests {
             vec![0.1, 0.4, 0.55, 0.9],
             vec![0.9, 0.6, 0.45, 0.1],
         )];
-        let sel = select(15, &pairs, &cands, 0).unwrap();
+        let sel = select(15, &pairs, &cands, 0, &ae_of(&cands)).unwrap();
         for j in 0..2 {
             let mut bins: Vec<usize> = sel.picks[j].clone();
             bins.sort_unstable();

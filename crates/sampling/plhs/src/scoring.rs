@@ -63,7 +63,25 @@ pub fn assignment_score_with(
     xs: &mut Vec<f64>,
     ys: &mut Vec<f64>,
 ) -> f64 {
-    let mut score = 0.0;
+    let mut r2s = Vec::new();
+    assignment_pair_r2s_with(pairs, cand, placed, xs, ys, &mut r2s);
+    r2s.iter().sum()
+}
+
+/// Per-pair squared Pearson correlations of a (partial) assignment,
+/// aligned with `pairs` — the ingredients of both the pooled score
+/// (their sum, [`assignment_score_with`]) and the saturated selection
+/// key (their per-pair τ floor, `plhs::space::sat_key`). Same series
+/// construction and floating-point behaviour as the pooled scorer.
+pub fn assignment_pair_r2s_with(
+    pairs: &[PairSeries],
+    cand: &[Vec<f64>],
+    placed: usize,
+    xs: &mut Vec<f64>,
+    ys: &mut Vec<f64>,
+    out: &mut Vec<f64>,
+) {
+    out.clear();
     for pair in pairs {
         xs.clear();
         ys.clear();
@@ -72,9 +90,8 @@ pub fn assignment_score_with(
         xs.extend_from_slice(&cand[pair.a][..placed]);
         ys.extend_from_slice(&cand[pair.b][..placed]);
         let r = pearson(xs, ys);
-        score += r * r;
+        out.push(r * r);
     }
-    score
 }
 
 #[cfg(test)]
@@ -109,6 +126,40 @@ mod tests {
     #[test]
     fn pearson_single_sample_is_zero() {
         assert_eq!(pearson(&[1.0], &[2.0]), 0.0);
+    }
+
+    #[test]
+    fn assignment_pair_r2s_sum_to_the_pooled_score() {
+        let pairs = vec![
+            PairSeries {
+                a: 0,
+                b: 1,
+                xs: vec![0.1, 0.5, 0.9],
+                ys: vec![0.1, 0.6, 0.9],
+            },
+            PairSeries {
+                a: 0,
+                b: 2,
+                xs: vec![0.1, 0.5, 0.9],
+                ys: vec![0.9, 0.4, 0.1],
+            },
+        ];
+        let cand = vec![vec![0.3, 0.7], vec![0.3, 0.7], vec![0.7, 0.3]];
+        let pooled = assignment_score(&pairs, &cand, 2);
+        let (mut xs, mut ys, mut r2s) = (Vec::new(), Vec::new(), Vec::new());
+        assignment_pair_r2s_with(&pairs, &cand, 2, &mut xs, &mut ys, &mut r2s);
+        assert_eq!(r2s.len(), 2);
+        assert_eq!(r2s.iter().sum::<f64>(), pooled);
+        // the per-pair values saturate into the selection key
+        let key = crate::space::sat_key(&r2s);
+        assert!(
+            (key - r2s
+                .iter()
+                .map(|&r2| r2.max(crate::space::SELECTION_TAU))
+                .sum::<f64>())
+            .abs()
+                < 1e-15
+        );
     }
 
     #[test]
