@@ -14,7 +14,7 @@ Currently available subcommands:
 | --- | --- |
 | `init` | create a new pool file with three example parameters (`a`, `b` uniform, `c` gaussian) |
 | `plhs` | pooled Latin Hypercube Sampling (the `plhs` crate) |
-| `stats` | statistical analysis of the pool: sampling points and evaluated results (the `doe-stats` crate) |
+| `stats` | statistical analysis of the pool: input definitions, sampling points, evaluated results and their correlations (the `doe-stats` crate) |
 
 ## Creating a new pool: `sampling init`
 
@@ -109,14 +109,16 @@ When the pass ran, `polish_moves`, `polish_score_before` and
 `polish_score_after` report what it did (`score` is always the
 post-polish score). The
 `stats` object carries
-`subcommand`, `file`, `evaluated`, `pool` and `results`, mirroring the
-human report's numbers. Both commands follow the same tiering as their
+`subcommand`, `file`, `evaluated` and the four section objects `input`,
+`pool`, `results` and `output_pairs`, mirroring the human report's
+numbers. Both commands follow the same tiering as their
 human output: `stats --json` prints the compact object (the pool
 without its per-parameter entries and pair list, carrying `n_pairs`
-instead; each result without its per-parameter entries), `stats --json
---verbose` the full one. This flag is the output convention for every
-future sampling-method subcommand, so benchmark runs can be collected
-line by line into one file.
+instead; the output pairs without their pair list; each result without
+its per-parameter entries), `stats --json --verbose` the full one. This
+flag is the output convention for every future sampling-method
+subcommand, so benchmark runs can be collected line by line into one
+file.
 
 ## Judging the pool and results before expensive simulations: `sampling stats`
 
@@ -125,13 +127,27 @@ sampling stats designs.json
 ```
 
 Read-only statistical analysis of the pool (nothing is written, the input
-file is untouched). The report has two tiers: the default is compact —
-the pool line, the global sampling metrics, an occupancy and a pair
-summary, and one line per result variable; `--verbose` adds the
-per-parameter detail and the complete pair list.
+file is untouched): the full `doe-stats` report, one section per group of
+statistics. The sections run in order — input definitions, sampling
+points, evaluated results — and the first section that cannot run ends
+the run with a validation error (exit 1). The report has two tiers: the
+default is compact; `--verbose` adds the per-parameter detail and the
+complete pair lists.
 
-Statistics of the sampling points themselves (the `designs`, independent
-of any evaluation — this is what to look at right after `plhs` generated
+The report is also available through the dedicated `doe-stats` binary
+(`crates/sensitivity/bin`) with the same sections as subcommands —
+`doe-stats input`, `doe-stats sampling`, `doe-stats output` — for
+pools that are not ready for the full report.
+
+The input section prints the parameter definitions (distribution,
+range, mean/sigma for gaussian, and the scope with its share of the
+range; full-range scopes are not restated). It works on a fresh pool:
+`init` followed by `stats` on a pool without designs and results fails
+at the sampling section, `doe-stats input` shows the definitions alone.
+
+The sampling section reports the statistics of the sampling points
+themselves (the `designs`, independent of any evaluation — this is what
+to look at right after `plhs` generated
 new designs). The pool line opens the report with the total, the
 evaluated count and the context number of designs per parameter:
 
@@ -187,13 +203,21 @@ descriptive statistics n, min, max, mean, median, sample std.
 3. The result mean per decile (10 equal-width bins) of the definition
    range.
 
-A pool without `results` is no longer an error: the sampling points are
-analyzed on their own, so `init` followed by `plhs` and `stats` reports
-how well the generated points are distributed and whether they
-correlate. The tool reports statistics; the judgment — run expensive
-simulations or not, where to set the scope for `--add` — stays with you.
-Exit codes as above; a pool with no designs at all, or a result name
-that matches no design, is a validation error (exit 1).
+The output section also correlates the result variables with each
+other: every pair of result variables gets a Pearson and Spearman
+correlation over the designs evaluated in both (n/a below 3 shared
+designs or without variance). The compact tier prints one summary line
+(the number of pairs and the maximum absolute correlations); `--verbose`
+lists every pair. With fewer than two result variables the pairs block
+is omitted.
+
+A pool without `results` is a validation error (exit 1): the full
+report stops at the output section and tells you so. Use
+`doe-stats sampling` (or `doe-stats input`) on such a pool to see the
+sections that do run. The tool reports statistics; the judgment — run
+expensive simulations or not, where to set the scope for `--add` —
+stays with you. Exit codes as above; a pool with no designs at all, or
+a result name that matches no design, is a validation error (exit 1).
 
 ### Which metric matters for which purpose
 

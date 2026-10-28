@@ -1,0 +1,22 @@
+{
+  "params": [
+    { "name": "x", "min": 0, "max": 10, "distribution": "uniform" },
+    { "name": "y", "min": 0, "max": 10, "mean": 5, "sigma": 2, "distribution": "gaussian" }
+  ],
+  "scope": [
+    { "name": "x", "min": 2, "max": 8 },
+    { "name": "y", "min": 0, "max": 10 }
+  ],
+  "designs": [
+    { "name": "1.1", "x": 2.5, "y": 3 },
+    { "name": "1.2", "x": 4, "y": 4.5 },
+    { "name": "1.3", "x": 6, "y": 5.5 },
+    { "name": "1.4", "x": 7.5, "y": 7 }
+  ],
+  "results": [
+    { "name": "1.1", "a": 1, "b": 2 },
+    { "name": "1.2", "a": 2, "b": 4 },
+    { "name": "1.3", "a": 3, "b": 6 },
+    { "name": "1.4", "a": 4, "b": 8 }
+  ]
+}
