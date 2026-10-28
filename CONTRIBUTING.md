@@ -77,6 +77,13 @@ cadence; publication to crates.io is manual and per crate.
   read-only (no backups, no `--no-backup`), flags `--json`/`--verbose`
   only, exit codes 0 success / 1 validation error / 2 usage or I/O
   error, unknown subcommand is a usage error. Keep these stable.
+- The input section is two-tier for Gaussian parameters: the compact
+  tier warns when the untruncated mass outside the scope exceeds 10%
+  (strictly above; the scope is the sampling interval), `--verbose`
+  prints the below/above values against the range and the scope and
+  never warns. The JSON `input` object carries the `lost_probability`
+  facts in both tiers — thresholds never appear in JSON. A Gaussian
+  `sigma` must be greater than zero (validation error).
 - `--json` on a subcommand means one machine-readable line on stdout,
   human output suppressed, errors still human on stderr. Every
   sampling-method subcommand gets this flag.

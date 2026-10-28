@@ -1,4 +1,4 @@
-input parameters:
+input parameters (2):
   x: uniform, range [0, 10], scope [2, 8] (60.0% of range)
   y: gaussian, range [0, 10], mean 5, sigma 2, scope: full range
 pool: 4 designs, 4 evaluated, 2 parameters (2 designs per parameter)

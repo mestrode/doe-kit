@@ -457,7 +457,7 @@ fn stats_reports_variables_and_coverage() {
     );
     // the full report: the input definitions first, then the sampling
     // points, then the outputs
-    assert!(stdout.contains("input parameters:"), "stdout: {stdout}");
+    assert!(stdout.contains("input parameters (2):"), "stdout: {stdout}");
     assert!(
         stdout.contains("x: uniform, range [0, 10], scope [2, 8] (60.0% of range)"),
         "stdout: {stdout}"
@@ -465,6 +465,12 @@ fn stats_reports_variables_and_coverage() {
     assert!(
         stdout
             .contains("y: gaussian, range [0, 10], mean 5, sigma 2, scope [3, 7] (40.0% of range)"),
+        "stdout: {stdout}"
+    );
+    // the narrowed scope [3, 7] cuts 31.7% of the gaussian's mass:
+    // the compact tier warns
+    assert!(
+        stdout.contains("    warning: 31.7% of the probability mass lies outside the scope"),
         "stdout: {stdout}"
     );
     assert!(stdout.contains("sampling points:"), "stdout: {stdout}");
@@ -526,7 +532,19 @@ fn stats_verbose_reports_the_full_details() {
     assert!(stdout.contains("in scope: "), "stdout: {stdout}");
     assert!(stdout.contains("outside scope: "), "stdout: {stdout}");
     assert!(stdout.contains("energy: n=3,"), "stdout: {stdout}");
-    assert!(stdout.contains("input parameters:"), "stdout: {stdout}");
+    assert!(stdout.contains("input parameters (2):"), "stdout: {stdout}");
+    // the input section in the verbose tier shows the gaussian's lost
+    // probability against the range and against the narrowed scope
+    assert!(
+        stdout.contains("    lost probability: 1.2% outside the range (0.6% below, 0.6% above)"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("    lost probability: 31.7% outside the scope (15.9% below, 15.9% above)"),
+        "stdout: {stdout}"
+    );
+    // values instead of the warning
+    assert!(!stdout.contains("warning:"), "stdout: {stdout}");
     assert!(stdout.contains("outputs:"), "stdout: {stdout}");
 
     // read-only: the input file is untouched
@@ -835,6 +853,12 @@ fn stats_json_reports_the_compact_pool_analysis() {
     assert_eq!(input_params[0]["scope_fraction"], 0.6);
     assert_eq!(input_params[1]["mean"], 5.0);
     assert_eq!(input_params[1]["sigma"], 2.0);
+    // the lost-probability facts ride along in both JSON tiers: no
+    // threshold in JSON, and the narrowed scope carries the scope keys
+    assert!(input_params[0].get("lost_probability").is_none());
+    let lp = &input_params[1]["lost_probability"];
+    assert!((lp["below_scope"].as_f64().unwrap() - 0.158655).abs() < 1e-4);
+    assert!((lp["above_scope"].as_f64().unwrap() - 0.158655).abs() < 1e-4);
     // the default JSON is the compact tier: global metrics and the
     // summary fields, no per-parameter or pair detail
     let pool = &v["pool"];

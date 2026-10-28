@@ -170,7 +170,9 @@ fn run_input(args: &ViewArgs) -> Result<String, CliError> {
     if args.json {
         return doe_stats_bin::json_input("input", &file_str(&args.file), &input).map_err(json);
     }
-    Ok(doe_stats_bin::human_input(&input).trim_end().to_owned())
+    Ok(doe_stats_bin::human_input(&input, args.verbose)
+        .trim_end()
+        .to_owned())
 }
 
 /// Sampling view: the statistics of the sampling points. The results
