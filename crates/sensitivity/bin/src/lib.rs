@@ -32,10 +32,50 @@ use doe_stats::{
 
 /// Formats the input section: one line per parameter definition.
 /// Single tier — the definitions are always printed in full.
-pub fn human_input(input: &InputStats) -> String {
-    let mut out = String::from("input parameters:\n");
+/// Total lost probability above which the compact input section warns
+/// (fraction of the untruncated Gaussian mass outside the scope).
+const LOST_PROBABILITY_CRITICAL: f64 = 0.10;
+
+/// Formats the input section: one line per parameter definition. The
+/// default is compact: definitions only, plus a warning under a
+/// Gaussian parameter whose untruncated mass outside the scope
+/// exceeds the critical fraction. `verbose` shows the lost-probability
+/// values of every Gaussian parameter instead of the warning.
+pub fn human_input(input: &InputStats, verbose: bool) -> String {
+    let mut out = format!("input parameters ({}):\n", input.parameters.len());
     for p in &input.parameters {
         out.push_str(&format!("  {}: {}\n", p.name, definition_line(p)));
+        if let Some(lp) = &p.lost_probability {
+            if verbose {
+                out.push_str(&format!(
+                    "    lost probability: {:.1}% outside the range ({:.1}% below, {:.1}% above)\n",
+                    (lp.below_range + lp.above_range) * 100.0,
+                    lp.below_range * 100.0,
+                    lp.above_range * 100.0
+                ));
+                if let (Some(below), Some(above)) = (lp.below_scope, lp.above_scope) {
+                    out.push_str(&format!(
+                        "    lost probability: {:.1}% outside the scope ({:.1}% below, {:.1}% above)\n",
+                        (below + above) * 100.0,
+                        below * 100.0,
+                        above * 100.0
+                    ));
+                }
+            } else {
+                // the warning tracks the scope: what sampling actually
+                // covers; a full-range scope equals the range figures
+                let (below, above) = match (lp.below_scope, lp.above_scope) {
+                    (Some(below), Some(above)) => (below, above),
+                    _ => (lp.below_range, lp.above_range),
+                };
+                if below + above > LOST_PROBABILITY_CRITICAL {
+                    out.push_str(&format!(
+                        "    warning: {:.1}% of the probability mass lies outside the scope\n",
+                        (below + above) * 100.0
+                    ));
+                }
+            }
+        }
     }
     out
 }
@@ -230,7 +270,7 @@ pub struct ReportData<'a> {
 /// section, then the output section.
 pub fn human_report(data: &ReportData, verbose: bool) -> String {
     let mut out = String::new();
-    out.push_str(&human_input(data.input));
+    out.push_str(&human_input(data.input, verbose));
     out.push_str(&human_sampling(data.pool, data.evaluated, verbose));
     out.push_str(&human_output(data.results, data.pairs, verbose));
     out.trim_end().to_owned()

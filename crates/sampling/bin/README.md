@@ -144,6 +144,11 @@ range, mean/sigma for gaussian, and the scope with its share of the
 range; full-range scopes are not restated). It works on a fresh pool:
 `init` followed by `stats` on a pool without designs and results fails
 at the sampling section, `doe-stats input` shows the definitions alone.
+For Gaussian parameters the section tracks the untruncated mass outside
+the sampling interval: the compact tier warns when more than 10% lies
+outside the scope, `--verbose` prints the below/above values against
+the range and the scope (the JSON carries the facts in both tiers).
+A nonpositive `sigma` is a validation error.
 
 The sampling section reports the statistics of the sampling points
 themselves (the `designs`, independent of any evaluation — this is what

@@ -45,12 +45,29 @@ read-only; no backups, no writes, no `--no-backup`.
 
 Input (works on a fresh pool): one line per parameter — distribution,
 range, mean and sigma for gaussian, and the scope with its share of the
-range; a full-range scope is not restated.
+range; a full-range scope is not restated. For Gaussian parameters the
+section also tracks how much of the untruncated distribution lies
+outside the sampling interval: the compact tier warns under a
+parameter whose mass outside the scope exceeds 10% (the scope is what
+sampling covers; with a full-range scope the range figures apply),
+`--verbose` prints the below/above values against the range and — when
+the scope is narrower — against the scope, and never warns. The JSON
+input object carries the `lost_probability` facts in both tiers (no
+threshold in JSON; the scope keys are omitted for a full-range scope).
+A nonpositive `sigma` is a validation error (exit 1).
 
 ```text
-input parameters:
+input parameters (2):
   x: uniform, range [0, 10], scope [2, 8] (60.0% of range)
   y: gaussian, range [0, 10], mean 5, sigma 2, scope: full range
+```
+
+Verbose adds the values; the compact tier warns instead:
+
+```text
+    lost probability: 1.2% outside the range (0.6% below, 0.6% above)
+    lost probability: 31.7% outside the scope (15.9% below, 15.9% above)
+    warning: 31.7% of the probability mass lies outside the scope
 ```
 
 Sampling (verbatim the `sampling stats` sampling-points block): the

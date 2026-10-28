@@ -54,7 +54,7 @@ fn bare_invocation_reports_all_three_sections() {
     let (out, stdout) = run(&dir, &["pool.json"]);
     assert!(out.status.success(), "stderr: {}", stderr_of(&out));
     // the sections in order: input, sampling, output
-    let input_at = stdout.find("input parameters:").expect("input section");
+    let input_at = stdout.find("input parameters (2):").expect("input section");
     let pool_at = stdout.find("pool: ").expect("pool line");
     let outputs_at = stdout.find("outputs:").expect("outputs section");
     assert!(
@@ -175,7 +175,7 @@ fn input_reports_the_definitions_only() {
     let (out, stdout) = run(&dir, &["input", "pool.json"]);
     assert!(out.status.success(), "stderr: {}", stderr_of(&out));
     assert!(
-        stdout.starts_with("input parameters:\n"),
+        stdout.starts_with("input parameters (2):\n"),
         "stdout: {stdout}"
     );
     assert!(
@@ -207,7 +207,7 @@ fn input_works_without_designs_and_results() {
     // definitions need neither designs nor results: a fresh pool works
     let (out, stdout) = run(&dir, &["input", "pool.json"]);
     assert!(out.status.success(), "stderr: {}", stderr_of(&out));
-    assert!(stdout.contains("input parameters:"), "stdout: {stdout}");
+    assert!(stdout.contains("input parameters (2):"), "stdout: {stdout}");
     fs::remove_dir_all(&dir).ok();
 }
 
@@ -248,6 +248,126 @@ fn input_json_reports_the_definitions() {
     assert_eq!(params[1]["sigma"], 2.0);
     assert!(params[1].get("scope").is_none());
     assert_eq!(params[1]["scope_fraction"], 1.0);
+    // the lost-probability facts: gaussian only, full-range scope omits
+    // the scope keys
+    assert!(params[0].get("lost_probability").is_none());
+    let lp = &params[1]["lost_probability"];
+    assert!((lp["below_range"].as_f64().unwrap() - 0.0062097).abs() < 1e-4);
+    assert!((lp["above_range"].as_f64().unwrap() - 0.0062097).abs() < 1e-4);
+    assert!(lp.get("below_scope").is_none());
+    assert!(lp.get("above_scope").is_none());
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// A one-parameter gaussian pool with the given scope.
+fn gaussian_pool(dir: &Path, mean: f64, sigma: f64, scope: (f64, f64)) -> PathBuf {
+    let file = dir.join("pool.json");
+    let content = format!(
+        r#"{{
+  "params": [
+    {{ "name": "g", "min": 0, "max": 10, "mean": {mean}, "sigma": {sigma}, "distribution": "gaussian" }}
+  ],
+  "scope": [
+    {{ "name": "g", "min": {}, "max": {} }}
+  ]
+}}"#,
+        scope.0, scope.1
+    );
+    fs::write(&file, content).unwrap();
+    file
+}
+
+#[test]
+fn input_verbose_lists_the_lost_probability() {
+    let dir = temp_dir("input-verbose");
+    write_fixture(&dir, "pool.json");
+
+    let (out, stdout) = run(&dir, &["input", "--verbose", "pool.json"]);
+    assert!(out.status.success(), "stderr: {}", stderr_of(&out));
+    // the gaussian's range line; the scope is the full range, so there
+    // is no scope line, and verbose never warns
+    assert!(
+        stdout.contains("    lost probability: 1.2% outside the range (0.6% below, 0.6% above)"),
+        "stdout: {stdout}"
+    );
+    assert!(!stdout.contains("outside the scope"), "stdout: {stdout}");
+    assert!(!stdout.contains("warning:"), "stdout: {stdout}");
+    // one gaussian parameter: exactly one lost-probability line
+    assert_eq!(stdout.matches("lost probability").count(), 1);
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn input_warns_about_critical_lost_probability() {
+    let dir = temp_dir("input-warn");
+    // gaussian mass 8/2 over range [0, 10]: 15.9% above the range, and
+    // the narrowed scope [6, 9] cuts 46.7% in total
+    gaussian_pool(&dir, 8.0, 2.0, (6.0, 9.0));
+
+    let (out, stdout) = run(&dir, &["input", "pool.json"]);
+    assert!(out.status.success(), "stderr: {}", stderr_of(&out));
+    assert!(
+        stdout.contains("    warning: 46.7% of the probability mass lies outside the scope"),
+        "stdout: {stdout}"
+    );
+    // the compact tier shows no values
+    assert!(!stdout.contains("lost probability:"), "stdout: {stdout}");
+
+    // verbose shows the values instead of the warning
+    let (_, verbose) = run(&dir, &["input", "--verbose", "pool.json"]);
+    assert!(
+        verbose.contains("    lost probability: 15.9% outside the range (0.0% below, 15.9% above)"),
+        "stdout: {verbose}"
+    );
+    assert!(
+        verbose
+            .contains("    lost probability: 46.7% outside the scope (15.9% below, 30.9% above)"),
+        "stdout: {verbose}"
+    );
+    assert!(!verbose.contains("warning:"), "stdout: {verbose}");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn input_does_not_warn_at_exactly_ten_percent() {
+    let dir = temp_dir("input-boundary");
+    // two-sided 90% interval: the total lost probability is 9.998% —
+    // displayed as 10.0%, but the warning fires only strictly above 10%
+    gaussian_pool(&dir, 5.0, 5.0 / 1.644_854, (0.0, 10.0));
+
+    let (out, stdout) = run(&dir, &["input", "pool.json"]);
+    assert!(out.status.success(), "stderr: {}", stderr_of(&out));
+    assert!(!stdout.contains("warning:"), "stdout: {stdout}");
+
+    let (_, verbose) = run(&dir, &["input", "--verbose", "pool.json"]);
+    assert!(
+        verbose.contains("    lost probability: 10.0% outside the range (5.0% below, 5.0% above)"),
+        "stdout: {verbose}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn input_rejects_nonpositive_sigma() {
+    let dir = temp_dir("input-sigma");
+    let file = dir.join("pool.json");
+    fs::write(
+        &file,
+        r#"{
+  "params": [
+    { "name": "g", "min": 0, "max": 10, "mean": 5, "sigma": 0, "distribution": "gaussian" }
+  ]
+}"#,
+    )
+    .unwrap();
+
+    let (out, _) = run(&dir, &["input", "pool.json"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr_of(&out).contains("'sigma' must be greater than zero"),
+        "stderr: {}",
+        stderr_of(&out)
+    );
     fs::remove_dir_all(&dir).ok();
 }
 
@@ -268,7 +388,7 @@ fn sampling_reports_the_sampling_points_only() {
     );
     assert!(stdout.contains("sampling points:"), "stdout: {stdout}");
     // the sampling points only: no definitions, no outputs
-    assert!(!stdout.contains("input parameters:"), "stdout: {stdout}");
+    assert!(!stdout.contains("input parameters"), "stdout: {stdout}");
     assert!(!stdout.contains("outputs:"), "stdout: {stdout}");
     assert!(!stdout.contains("output pairs:"), "stdout: {stdout}");
 
@@ -351,7 +471,7 @@ fn output_reports_results_and_output_pairs() {
     assert!(!stdout.contains("in scope:"), "stdout: {stdout}");
     assert!(!stdout.contains("  a vs b: pearson"), "stdout: {stdout}");
     // the outputs only: no definitions, no sampling points
-    assert!(!stdout.contains("input parameters:"), "stdout: {stdout}");
+    assert!(!stdout.contains("input parameters"), "stdout: {stdout}");
     assert!(!stdout.contains("sampling points:"), "stdout: {stdout}");
 
     // read-only: the input file is untouched

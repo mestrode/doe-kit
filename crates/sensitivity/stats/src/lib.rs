@@ -33,6 +33,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use doe_types::error::{Error, Result};
+use doe_types::scaling::normal_cdf;
 use doe_types::{Design, Distribution, Parameter};
 use plhs::scoring::pearson;
 
@@ -612,6 +613,32 @@ pub struct ParameterDefinition {
     pub scope: Option<(f64, f64)>,
     /// Scope width as a fraction of the definition range (1.0 = full).
     pub scope_fraction: f64,
+    /// Probability mass of the untruncated Gaussian that lies outside
+    /// the definition range and the scope; `None` for uniform
+    /// parameters (no mass outside the definition range by
+    /// construction).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lost_probability: Option<LostProbability>,
+}
+
+/// Gaussian probability mass outside the definition range and the
+/// scope, as fractions of the untruncated distribution. The scope keys
+/// are `None` (and omitted in JSON) when the scope is the full
+/// definition range — the scope figures equal the range figures then.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct LostProbability {
+    /// Mass strictly below the definition range lower bound.
+    pub below_range: f64,
+    /// Mass strictly above the definition range upper bound.
+    pub above_range: f64,
+    /// Mass strictly below the scope lower bound; `None` when the
+    /// scope is the full definition range.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub below_scope: Option<f64>,
+    /// Mass strictly above the scope upper bound; `None` when the
+    /// scope is the full definition range.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub above_scope: Option<f64>,
 }
 
 /// Input analysis: the parameter definitions of the pool. Definitions
@@ -652,7 +679,33 @@ fn definition_of(p: &Parameter) -> ParameterDefinition {
         scope: (!full).then_some((p.scope_min, p.scope_max)),
         // `min < max` is validated by the parameter constructor
         scope_fraction: (p.scope_max - p.scope_min) / (p.max - p.min),
+        lost_probability: lost_probability_of(p, full),
     }
+}
+
+/// Probability mass of the untruncated Gaussian that lies below/above
+/// the definition range and the scope. Uniform parameters have no
+/// mass outside their definition range: `None`.
+fn lost_probability_of(p: &Parameter, full: bool) -> Option<LostProbability> {
+    let Distribution::Gaussian { mean, sigma } = p.distribution else {
+        return None;
+    };
+    let below_range = normal_cdf((p.min - mean) / sigma);
+    let above_range = 1.0 - normal_cdf((p.max - mean) / sigma);
+    let (below_scope, above_scope) = if full {
+        (None, None)
+    } else {
+        (
+            Some(normal_cdf((p.scope_min - mean) / sigma)),
+            Some(1.0 - normal_cdf((p.scope_max - mean) / sigma)),
+        )
+    };
+    Some(LostProbability {
+        below_range,
+        above_range,
+        below_scope,
+        above_scope,
+    })
 }
 
 /// Pearson and Spearman correlation between two result variables over
@@ -1516,6 +1569,43 @@ mod tests {
     #[test]
     fn input_stats_of_an_empty_parameter_list_is_empty() {
         assert!(analyze_inputs(&[]).parameters.is_empty());
+    }
+
+    #[test]
+    fn input_stats_report_lost_probability_of_a_centered_gaussian() {
+        let y = Parameter::gaussian("y", 0.0, 10.0, 5.0, 2.0).unwrap();
+        let input = analyze_inputs(&[y]);
+        let lp = input.parameters[0].lost_probability.as_ref().unwrap();
+        // 2.5 sigma at each edge of the range: Phi(-2.5) per side
+        assert!((lp.below_range - 0.0062097).abs() < 1e-4, "{lp:?}");
+        assert!((lp.above_range - 0.0062097).abs() < 1e-4, "{lp:?}");
+        // the scope is the full range: no separate scope figures
+        assert_eq!(lp.below_scope, None);
+        assert_eq!(lp.above_scope, None);
+    }
+
+    #[test]
+    fn input_stats_report_lost_probability_against_a_narrow_scope() {
+        let y = Parameter::gaussian("y", 0.0, 10.0, 8.0, 2.0)
+            .unwrap()
+            .with_scope(6.0, 9.0)
+            .unwrap();
+        let input = analyze_inputs(&[y]);
+        let lp = input.parameters[0].lost_probability.as_ref().unwrap();
+        // range [0, 10], mean 8, sigma 2: the mass below is negligible,
+        // above the range Phi(-1)
+        assert!(lp.below_range < 1e-4, "{lp:?}");
+        assert!((lp.above_range - 0.158655).abs() < 1e-4, "{lp:?}");
+        // scope [6, 9]: below Phi(-1), above 1 - Phi(0.5)
+        assert!((lp.below_scope.unwrap() - 0.158655).abs() < 1e-4, "{lp:?}");
+        assert!((lp.above_scope.unwrap() - 0.308538).abs() < 1e-4, "{lp:?}");
+    }
+
+    #[test]
+    fn input_stats_uniform_parameters_have_no_lost_probability() {
+        let x = Parameter::uniform("x", 0.0, 10.0).unwrap();
+        let input = analyze_inputs(&[x]);
+        assert_eq!(input.parameters[0].lost_probability, None);
     }
 
     // ------------------------------------------------------------------

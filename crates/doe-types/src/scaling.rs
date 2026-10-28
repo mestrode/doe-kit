@@ -92,7 +92,7 @@ impl Parameter {
                 return Err(Self::err(&name, "'mean' must be finite"));
             }
             if !sigma.is_finite() || sigma <= 0.0 {
-                return Err(Self::err(&name, "'sigma' must be positive"));
+                return Err(Self::err(&name, "'sigma' must be greater than zero"));
             }
         }
         Ok(Self {
@@ -294,6 +294,17 @@ mod tests {
         // a value below the scope transforms below 0, above the scope above 1
         assert!(p.transform(1.0) < 0.0);
         assert!(p.transform(9.0) > 1.0);
+    }
+
+    #[test]
+    fn gaussian_sigma_must_be_greater_than_zero() {
+        let err = Parameter::gaussian("c", 0.0, 5.0, 2.5, 0.0).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid parameter 'c': 'sigma' must be greater than zero"
+        );
+        assert!(Parameter::gaussian("c", 0.0, 5.0, 2.5, -1.0).is_err());
+        assert!(Parameter::gaussian("c", 0.0, 5.0, 2.5, 1.0).is_ok());
     }
 
     #[test]
