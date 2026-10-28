@@ -12,14 +12,18 @@
 //! overwrite an existing file.
 //!
 //! `sampling stats` analyzes the pool (read-only judgment support before
-//! expensive simulations are run): statistics of the sampling points
-//! themselves — space-filling metrics in the unit cube (min/mean/median
-//! pairwise distance, mean nearest-neighbor distance, centered L2
-//! discrepancy, the pooled pair r2 that plhs optimizes) plus the
-//! occupancy and pair summaries — and, when results exist, one summary
-//! line per result variable. `--verbose` switches to the full tier:
+//! expensive simulations are run): the full report of the `doe-stats`
+//! binary — the parameter definitions, then the statistics of the
+//! sampling points themselves — space-filling metrics in the unit cube
+//! (min/mean/median pairwise distance, mean nearest-neighbor distance,
+//! centered L2 discrepancy, the pooled pair r2 that plhs optimizes) plus
+//! the occupancy and pair summaries — then one summary line per result
+//! variable and the pairs between the result variables. The sections
+//! run in order and the first failing one ends the run (a pool without
+//! designs fails at the sampling section, a pool without results at
+//! the output section). `--verbose` switches to the full tier:
 //! per-parameter descriptive statistics, decile coverage and
-//! outer-decile counts, the complete pair list and the per-parameter
+//! outer-decile counts, the complete pair lists and the per-parameter
 //! result blocks.
 //!
 //! Every subcommand that produces a result accepts `--json`: one line of
@@ -57,9 +61,10 @@ enum Command {
     /// low-correlation designs, scoped (--add) or whole-surface (--explore)
     #[command(name = "plhs")]
     Plhs(PlhsArgs),
-    /// Statistical analysis of the pool: sampling-point statistics plus,
-    /// when results exist, per-result coverage, correlations, scope
-    /// split and decile means (read-only)
+    /// Full statistics report of the pool: parameter definitions,
+    /// sampling points and evaluated results (read-only; the
+    /// `doe-stats` binary is the stats front-end, this subcommand is
+    /// the transitional wrapper)
     #[command(name = "stats")]
     Stats(StatsArgs),
 }
@@ -285,37 +290,40 @@ fn run(args: &PlhsArgs) -> Result<String, CliError> {
     Ok(summary)
 }
 
-/// Analyzes the pool and formats the statistics report: statistics of the
-/// sampling points themselves, plus the evaluated results when any exist.
-/// Read-only: no files are written.
+/// Analyzes the pool and formats the full statistics report (the same
+/// report as bare `doe-stats`): the parameter definitions, then the
+/// sampling points, then the evaluated results. The sections run in
+/// order and the first failing one ends the run. Read-only: no files
+/// are written.
 fn run_stats(args: &StatsArgs) -> Result<String, CliError> {
     let (_, root) = doe_pool::read(&args.file).map_err(pool)?;
     let params = doe_pool::format::parse_params(&root).map_err(validation)?;
     let designs = doe_pool::format::parse_designs(&root, &params).map_err(validation)?;
     let results = doe_pool::format::parse_results(&root).map_err(validation)?;
-    // results first: a result name matching no design keeps failing
-    // exactly as before; the sampling points are reported on top
-    let stats = if results.is_empty() {
-        Vec::new()
-    } else {
-        doe_stats::analyze(&params, &designs, &results).map_err(validation)?
-    };
+    // input section (definitions cannot fail), then the sampling
+    // section (needs designs), then the output section (needs results)
+    let input = doe_stats::analyze_inputs(&params);
     let pool = doe_stats::analyze_pool(&params, &designs).map_err(validation)?;
+    if results.is_empty() {
+        return Err(CliError::Validation("no results to analyze".to_owned()));
+    }
+    let stats = doe_stats::analyze(&params, &designs, &results).map_err(validation)?;
+    let pairs = doe_stats::analyze_result_pairs(&designs, &results).map_err(validation)?;
+    let data = doe_stats_bin::ReportData {
+        input: &input,
+        pool: &pool,
+        results: &stats,
+        pairs: &pairs,
+        evaluated: results.len(),
+    };
     if args.json {
         return doe_stats_bin::json_report(
             "stats",
             &args.file.display().to_string(),
-            results.len(),
-            &pool,
-            &stats,
+            &data,
             args.verbose,
         )
         .map_err(|e| validation(plhs::Error::Invalid(e.to_string())));
     }
-    Ok(doe_stats_bin::human_report(
-        &pool,
-        &stats,
-        results.len(),
-        args.verbose,
-    ))
+    Ok(doe_stats_bin::human_report(&data, args.verbose))
 }

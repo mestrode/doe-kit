@@ -3,24 +3,64 @@
 //!
 //! Pure formatting: the statistics themselves are computed by the
 //! `doe-stats` library crate; this crate never computes and never writes
-//! files. It is the shared front-end library for the `doe-stats` binary
+//! files. It is the shared front-end library of the `doe-stats` binary
 //! (subcommands `input`, `sampling`, `output` plus the bare full report)
 //! and serves the `sampling stats` subcommand in the meantime.
+//!
+//! The report is organized in three sections, one per view:
+//!
+//! - input: the parameter definitions (distribution, definition range,
+//!   the Gaussian's mean and sigma, the scope with its share of the
+//!   range). Single tier: definitions are always printed in full.
+//! - sampling: the statistics of the sampling points — space-filling
+//!   metrics in the unit cube, occupancy and pair summaries.
+//! - output: the statistics of the evaluated results plus the pair
+//!   correlations between the result variables.
+//!
+//! Sections are strict: the caller computes what its view needs, and a
+//! view whose data is absent fails before formatting. The default tier
+//! is compact; `--verbose` switches to the full detail — for the human
+//! report and `--json` alike.
 
-use doe_stats::{DECILES, PoolStats, VariableStats};
+use doe_stats::{
+    DECILES, InputStats, ParameterDefinition, PoolStats, ResultPairStats, VariableStats,
+};
 
-/// Formats the statistics as a human-readable report: one block for the
-/// sampling points, then one block per result variable. Statistics only,
-/// the judgment stays with the reader. The default is the compact tier
-/// (global metrics and summary lines); `verbose` adds the per-parameter
-/// descriptive statistics and decile counts, the complete pair list and
-/// the per-parameter blocks of the result variables.
-pub fn human_report(
-    pool: &PoolStats,
-    results: &[VariableStats],
-    evaluated: usize,
-    verbose: bool,
-) -> String {
+// ---------------------------------------------------------------------
+// human report
+// ---------------------------------------------------------------------
+
+/// Formats the input section: one line per parameter definition.
+/// Single tier — the definitions are always printed in full.
+pub fn human_input(input: &InputStats) -> String {
+    let mut out = String::from("input parameters:\n");
+    for p in &input.parameters {
+        out.push_str(&format!("  {}: {}\n", p.name, definition_line(p)));
+    }
+    out
+}
+
+/// One parameter definition as a report line fragment (without name).
+fn definition_line(p: &ParameterDefinition) -> String {
+    let mut s = format!("{}, range [{}, {}]", p.distribution, p.min, p.max);
+    if let (Some(mean), Some(sigma)) = (p.mean, p.sigma) {
+        s.push_str(&format!(", mean {mean}, sigma {sigma}"));
+    }
+    match p.scope {
+        Some((lo, hi)) => s.push_str(&format!(
+            ", scope [{lo}, {hi}] ({:.1}% of range)",
+            p.scope_fraction * 100.0
+        )),
+        None => s.push_str(", scope: full range"),
+    }
+    s
+}
+
+/// Formats the sampling section: the pool line and the sampling-point
+/// statistics. The default is the compact tier (global metrics and the
+/// occupancy and pair summaries); `verbose` adds the per-parameter
+/// descriptive statistics and decile counts and the complete pair list.
+pub fn human_sampling(pool: &PoolStats, evaluated: usize, verbose: bool) -> String {
     let mut out = String::new();
     let parameters = pool.parameters.len();
     out.push_str(&format!(
@@ -75,10 +115,6 @@ pub fn human_report(
         pool.empty_decile_slots,
         parameters * DECILES
     ));
-    let max_of = |v: Option<f64>| match v {
-        Some(x) => format!("{x:.6}"),
-        None => "n/a".to_owned(),
-    };
     out.push_str(&format!(
         "  pairs: {}, max |pearson| {}, max |spearman| {}\n",
         pool.pairs.len(),
@@ -99,6 +135,16 @@ pub fn human_report(
             }
         }
     }
+    out
+}
+
+/// Formats the output section: one block per result variable, then the
+/// pair correlations between the result variables. The compact tier
+/// prints one summary line per variable and the output-pairs summary;
+/// `verbose` adds the per-parameter blocks and the complete pair list.
+/// With fewer than two result variables the pairs block is omitted.
+pub fn human_output(results: &[VariableStats], pairs: &ResultPairStats, verbose: bool) -> String {
+    let mut out = String::from("outputs:\n");
     for v in results {
         out.push_str(&format!(
             "{}: n={}, min {:.6}, max {:.6}, mean {:.6}, median {:.6}, std {:.6}\n",
@@ -143,37 +189,83 @@ pub fn human_report(
             }
         }
     }
+    if !pairs.pairs.is_empty() {
+        out.push_str(&format!(
+            "output pairs: {}, max |pearson| {}, max |spearman| {}\n",
+            pairs.pairs.len(),
+            max_of(pairs.max_abs_pearson),
+            max_of(pairs.max_abs_spearman)
+        ));
+        if verbose {
+            for pair in &pairs.pairs {
+                match (pair.pearson, pair.spearman) {
+                    (Some(pe), Some(se)) => out.push_str(&format!(
+                        "  {} vs {}: pearson {pe:.6}, spearman {se:.6} (n {})\n",
+                        pair.a, pair.b, pair.n
+                    )),
+                    _ => out.push_str(&format!(
+                        "  {} vs {}: pearson n/a, spearman n/a (n {}; n < 3 or no variance)\n",
+                        pair.a, pair.b, pair.n
+                    )),
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The computed sections of a full report: the input definitions, the
+/// sampling statistics, the per-result statistics and the output
+/// correlations. The caller has already run all analyses (a section
+/// that cannot run fails before the report is formatted).
+pub struct ReportData<'a> {
+    pub input: &'a InputStats,
+    pub pool: &'a PoolStats,
+    pub results: &'a [VariableStats],
+    pub pairs: &'a ResultPairStats,
+    pub evaluated: usize,
+}
+
+/// Formats the full report: the input section, then the sampling
+/// section, then the output section.
+pub fn human_report(data: &ReportData, verbose: bool) -> String {
+    let mut out = String::new();
+    out.push_str(&human_input(data.input));
+    out.push_str(&human_sampling(data.pool, data.evaluated, verbose));
+    out.push_str(&human_output(data.results, data.pairs, verbose));
     out.trim_end().to_owned()
 }
 
-/// Builds the one-line machine-readable JSON report: `subcommand` (the
-/// front-end's own label), `file`, `evaluated`, the pool statistics and
-/// the result statistics. The default is the compact tier — the
-/// per-parameter details and the pair list are dropped, the pool keeps
-/// its summary fields and an `n_pairs` count; `verbose` keeps the full
-/// objects. Serialization failures are reported, everything else cannot
-/// fail (the statistics structs serialize to objects by construction).
-pub fn json_report(
-    subcommand: &str,
-    file: &str,
-    evaluated: usize,
-    pool: &PoolStats,
-    results: &[VariableStats],
-    verbose: bool,
-) -> Result<String, serde_json::Error> {
-    let mut pool_v = serde_json::to_value(pool)?;
-    let mut results_v = serde_json::to_value(results)?;
+// ---------------------------------------------------------------------
+// JSON report
+// ---------------------------------------------------------------------
+
+/// The pool statistics as a JSON value; the compact tier keeps the
+/// global metrics and summary fields and replaces the per-parameter
+/// details and the pair list with an `n_pairs` count.
+fn pool_value(pool: &PoolStats, verbose: bool) -> Result<serde_json::Value, serde_json::Error> {
+    let mut v = serde_json::to_value(pool)?;
     if !verbose {
-        // compact tier: global metrics and summary fields only —
-        // the per-parameter details and the pair list are dropped
-        let n_pairs = pool_v["pairs"].as_array().map_or(0, Vec::len);
-        let obj = pool_v
+        let n_pairs = v["pairs"].as_array().map_or(0, Vec::len);
+        let obj = v
             .as_object_mut()
             .expect("PoolStats serializes to an object");
         obj.remove("parameters");
         obj.remove("pairs");
         obj.insert("n_pairs".to_owned(), serde_json::json!(n_pairs));
-        if let Some(results) = results_v.as_array_mut() {
+    }
+    Ok(v)
+}
+
+/// The result statistics as a JSON value; the compact tier drops the
+/// per-parameter blocks of each variable.
+fn results_value(
+    results: &[VariableStats],
+    verbose: bool,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let mut v = serde_json::to_value(results)?;
+    if !verbose {
+        if let Some(results) = v.as_array_mut() {
             for entry in results {
                 entry
                     .as_object_mut()
@@ -182,15 +274,108 @@ pub fn json_report(
             }
         }
     }
+    Ok(v)
+}
+
+/// The output-pair statistics as a JSON value; the compact tier
+/// replaces the pair list with an `n_pairs` count, keeping the maxima.
+fn pairs_value(
+    pairs: &ResultPairStats,
+    verbose: bool,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let mut v = serde_json::to_value(pairs)?;
+    if !verbose {
+        let n_pairs = v["pairs"].as_array().map_or(0, Vec::len);
+        let obj = v
+            .as_object_mut()
+            .expect("ResultPairStats serializes to an object");
+        obj.remove("pairs");
+        obj.insert("n_pairs".to_owned(), serde_json::json!(n_pairs));
+    }
+    Ok(v)
+}
+
+/// Builds the one-line machine-readable JSON payload of the input view:
+/// `subcommand` (the front-end's own label), `file` and the `input`
+/// object. Single tier — the definitions have no detail depth.
+pub fn json_input(
+    subcommand: &str,
+    file: &str,
+    input: &InputStats,
+) -> Result<String, serde_json::Error> {
+    let report = serde_json::json!({
+        "subcommand": subcommand,
+        "file": file,
+        "input": serde_json::to_value(input)?,
+    });
+    Ok(report.to_string())
+}
+
+/// Builds the one-line machine-readable JSON payload of the sampling
+/// view: `subcommand`, `file`, `evaluated` and the `pool` object
+/// (compact by default, full with `verbose`).
+pub fn json_sampling(
+    subcommand: &str,
+    file: &str,
+    evaluated: usize,
+    pool: &PoolStats,
+    verbose: bool,
+) -> Result<String, serde_json::Error> {
     let report = serde_json::json!({
         "subcommand": subcommand,
         "file": file,
         "evaluated": evaluated,
-        "pool": pool_v,
-        "results": results_v,
+        "pool": pool_value(pool, verbose)?,
     });
     Ok(report.to_string())
 }
+
+/// Builds the one-line machine-readable JSON payload of the output
+/// view: `subcommand`, `file`, `evaluated`, the `results` array and the
+/// `output_pairs` object (compact by default, full with `verbose`).
+pub fn json_output(
+    subcommand: &str,
+    file: &str,
+    evaluated: usize,
+    results: &[VariableStats],
+    pairs: &ResultPairStats,
+    verbose: bool,
+) -> Result<String, serde_json::Error> {
+    let report = serde_json::json!({
+        "subcommand": subcommand,
+        "file": file,
+        "evaluated": evaluated,
+        "results": results_value(results, verbose)?,
+        "output_pairs": pairs_value(pairs, verbose)?,
+    });
+    Ok(report.to_string())
+}
+
+/// Builds the one-line machine-readable JSON payload of the full
+/// report: `subcommand`, `file`, `evaluated` and the three section
+/// objects `input`, `pool`, `results` and `output_pairs` (the input
+/// object is single tier; the others follow the tiering).
+pub fn json_report(
+    subcommand: &str,
+    file: &str,
+    data: &ReportData,
+    verbose: bool,
+) -> Result<String, serde_json::Error> {
+    let report = serde_json::json!({
+        "subcommand": subcommand,
+        "file": file,
+        "evaluated": data.evaluated,
+        "input": serde_json::to_value(data.input)?,
+        "pool": pool_value(data.pool, verbose)?,
+        "results": results_value(data.results, verbose)?,
+        "output_pairs": pairs_value(data.pairs, verbose)?,
+    });
+    Ok(report.to_string())
+}
+
+// ---------------------------------------------------------------------
+// shared helpers
+// ---------------------------------------------------------------------
 
 /// Formats `n / k` as a context number: an integer when it divides
 /// evenly, one decimal otherwise.
@@ -202,5 +387,14 @@ fn designs_per_parameter(designs: usize, parameters: usize) -> String {
         format!("{}", designs / parameters)
     } else {
         format!("{:.1}", designs as f64 / parameters as f64)
+    }
+}
+
+/// Formats a maximum of absolute correlations: `n/a` when none is
+/// defined.
+fn max_of(v: Option<f64>) -> String {
+    match v {
+        Some(x) => format!("{x:.6}"),
+        None => "n/a".to_owned(),
     }
 }
