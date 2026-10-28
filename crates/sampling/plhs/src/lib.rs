@@ -20,7 +20,9 @@
 //!    chunks sized so each chunk's search fits the greedy budget; at 50+
 //!    parameters that degenerates to the standard-LHS loop of one design
 //!    per chunk. After the chunk loop a deterministic swap descent (the
-//!    polish pass) refines the finished assignment; see
+//!    polish pass) refines the finished assignment in two phases: a
+//!    descent of the pooled pair r², then a descent of the
+//!    space-filling energy under a per-pair r² guard; see
 //!    [`polish`](mod@crate::polish).
 //!
 //! All computation happens on the transformed `[0, 1]` values; real values
@@ -89,6 +91,7 @@ pub mod binning;
 pub mod polish;
 pub mod scoring;
 pub mod selection;
+pub mod space;
 
 pub use doe_types::error;
 pub use doe_types::scaling;
@@ -118,12 +121,17 @@ pub struct Augmentation {
     /// the whole run fit a single selection).
     pub chunks: usize,
     /// Report of the post-placement refinement pass, when it ran: the
-    /// swap descent over the finished assignment (see
+    /// two-phase swap descent over the finished assignment (see
     /// [`polish`](mod@crate::polish)). `None` when the pass was
     /// disabled or skipped — a single-chunk exact run is already
     /// jointly optimal over the pass's swap space, so polishing it is
     /// a provable no-op.
     pub polish: Option<PolishReport>,
+    /// Audze–Eglais space-filling energy of the active point set (the
+    /// designs in scope for every parameter plus the new designs, on
+    /// the unit cube; see [`space::ae_energy`]). Lower means better
+    /// spread; `0.0` below two active points.
+    pub ae_energy: f64,
 }
 
 /// Samples `m` new designs for the given parameters, extending the Latin
@@ -156,7 +164,9 @@ pub struct Augmentation {
 /// improvable even when every chunk ran exact: greedy chunks drift, and
 /// batched exact chunks are per-chunk optimal, never jointly. With
 /// `polish` enabled, a deterministic swap descent refines the finished
-/// assignment after the chunk loop, before any values materialize; its
+/// assignment after the chunk loop, before any values materialize:
+/// phase 1 descends the pooled pair r², phase 2 the space-filling
+/// energy under a per-pair r² guard; its
 /// report is returned in [`Augmentation::polish`]. A single-chunk exact
 /// run skips the pass — exact already searched the whole assignment
 /// space, of which the descent's swap space is a subset.
@@ -336,17 +346,40 @@ pub fn augment(
         }
     }
 
+    // Context points of the space-filling criterion (issue #46): the
+    // designs in scope for EVERY parameter, transformed to the unit
+    // cube — the fixed context the phase-2 descent spreads the new
+    // designs against. Evaluated designs are fixed context; only the
+    // new designs move.
+    let base_points: Vec<Vec<f64>> = designs
+        .iter()
+        .filter(|design| {
+            params
+                .iter()
+                .enumerate()
+                .all(|(j, param)| param.in_scope(design.values[j]))
+        })
+        .map(|design| {
+            (0..p)
+                .map(|j| params[j].transform(design.values[j]))
+                .collect()
+        })
+        .collect();
+
     // Post-placement refinement (issue #24): chunks are optimized one at
     // a time, so the finished assignment is improvable — greedy chunks
     // drift, batched exact chunks are per-chunk optimal, never jointly.
     // A single-chunk exact run is the exception: exact searched the whole
     // assignment space, of which the descent's swap space is a subset,
     // so polishing it is a provable no-op and is skipped to keep those
-    // outputs byte-exact.
+    // outputs byte-exact. Phase 2 (issue #46) additionally descends the
+    // space-filling energy under the per-pair τ guard, breaking the
+    // zero-correlation X shapes the pooled r² cannot see.
     let strategy = SelectionStrategy::aggregate(&strategies);
     let polish_report = if polish && !(chunks == 1 && strategy == SelectionStrategy::Exact) {
         Some(polish::polish(
             &base_pairs,
+            &base_points,
             &mut placed_t,
             &mut placed_values,
         ))
@@ -383,6 +416,10 @@ pub fn augment(
         None => assignment_score(&base_pairs, &placed_t, m),
     };
 
+    // Space-filling energy of the finished assignment (issue #46):
+    // the active point set after the polish pass, whatever ran.
+    let ae_energy = space::ae_energy(&polish::active_rows(&base_points, &placed_t));
+
     Ok(Augmentation {
         new_designs,
         score,
@@ -390,6 +427,7 @@ pub fn augment(
         strategy,
         chunks,
         polish: polish_report,
+        ae_energy,
     })
 }
 
@@ -516,14 +554,16 @@ mod tests {
             .as_ref()
             .expect("greedy runs are polished by default");
         assert_eq!(polished.strategy, SelectionStrategy::Greedy);
-        // the descent is monotone: the score after is never worse
+        // monotone in r² up to the per-pair τ guard: phase 2 may
+        // spend headroom, but never leaves a pair above the loosest
+        // tier (one pair here)
         assert!(
-            report.score_after <= report.score_before + 1e-12,
-            "polish worsened the score: {} -> {}",
+            report.score_after <= report.score_before + space::TAU_TIERS[2] + 1e-12,
+            "polish broke the τ guard: {} -> {}",
             report.score_before,
             report.score_after
         );
-        assert!(polished.score <= plain.score + 1e-12);
+        assert!(polished.score <= plain.score + space::TAU_TIERS[2] + 1e-12);
         // the reported score is the post-polish score
         assert_eq!(report.score_after, polished.score);
     }
@@ -576,13 +616,15 @@ mod tests {
         assert!(plain.polish.is_none());
         let report = polished.polish.as_ref().expect("batched runs are polished");
         assert_eq!(polished.strategy, SelectionStrategy::Exact);
+        // monotone in r² up to the per-pair τ guard (105 pairs here:
+        // one tier of headroom per pair bounds the total)
         assert!(
-            report.score_after <= report.score_before + 1e-12,
-            "polish worsened the score: {} -> {}",
+            report.score_after <= report.score_before + space::TAU_TIERS[2] * 105.0 + 1e-9,
+            "polish broke the τ guard: {} -> {}",
             report.score_before,
             report.score_after
         );
-        assert!(polished.score <= plain.score + 1e-12);
+        assert!(polished.score <= plain.score + space::TAU_TIERS[2] * 105.0 + 1e-9);
         // Latin Hypercube: one design per bin per parameter, preserved
         // structurally by every swap
         for j in 0..15 {
@@ -595,6 +637,38 @@ mod tests {
             bins.dedup();
             assert_eq!(bins.len(), 3, "parameter {j}: designs share bins");
         }
+    }
+
+    #[test]
+    fn augmentation_reports_the_ae_energy() {
+        // the space-filling half of the combined criterion (issue #46):
+        // positive whenever the active point set has two or more
+        // designs, deterministic for a seed, and independent of whether
+        // the polish pass ran
+        let params = vec![
+            Parameter::uniform("x", 0.0, 10.0)
+                .unwrap()
+                .with_scope(2.0, 8.0)
+                .unwrap(),
+            Parameter::uniform("y", 0.0, 10.0)
+                .unwrap()
+                .with_scope(3.0, 7.0)
+                .unwrap(),
+        ];
+        let designs: Vec<Design> = (0..8)
+            .map(|i| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![2.2 + i as f64 * 0.5, 3.1 + (i % 5) as f64 * 0.8],
+            })
+            .collect();
+        let plain = augment(&params, &designs, 2, 7, 1_000_000, false).unwrap();
+        let polished = augment(&params, &designs, 2, 7, 1_000_000, true).unwrap();
+        assert!(plain.ae_energy > 0.0, "AE energy must be positive");
+        // deterministic for a seed
+        let again = augment(&params, &designs, 2, 7, 1_000_000, false).unwrap();
+        assert_eq!(plain.ae_energy, again.ae_energy);
+        // phase 2 only lowers the energy — never raises it
+        assert!(polished.ae_energy <= plain.ae_energy);
     }
 
     #[test]

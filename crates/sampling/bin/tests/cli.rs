@@ -291,7 +291,10 @@ fn plhs_json_emits_one_machine_readable_line() {
     assert_eq!(v["polished"], false);
     assert!(v.get("polish_moves").is_none());
     assert!(v.get("polish_score_before").is_none());
+    assert!(v.get("polish_ae_moves").is_none());
     assert!(v["score"].as_f64().unwrap() >= 0.0);
+    // the space-filling energy is reported whether or not the pass ran
+    assert!(v["ae_energy"].as_f64().is_some(), "ae_energy in {stdout}");
     assert!(v["elapsed_ms"].as_u64().is_some(), "elapsed_ms in {stdout}");
     // the pool is written and backed up exactly as without --json
     let root: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
@@ -318,7 +321,9 @@ fn plhs_json_reports_greedy_with_cap_zero() {
     let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
     assert_eq!(v["cap"], 0);
     assert_eq!(v["strategy"], "greedy");
-    // a greedy run is polished by default and reports what the pass did
+    // a greedy run is polished by default and reports what the pass did:
+    // phase 1 (r²) and phase 2 (space-filling) each report their own
+    // move counts and before/after values
     assert_eq!(v["polished"], true);
     assert!(
         v["polish_moves"].as_u64().is_some(),
@@ -326,6 +331,13 @@ fn plhs_json_reports_greedy_with_cap_zero() {
     );
     assert!(v["polish_score_before"].as_f64().is_some());
     assert!(v["polish_score_after"].as_f64().is_some());
+    assert!(
+        v["polish_ae_moves"].as_u64().is_some(),
+        "polish_ae_moves in {stdout}"
+    );
+    assert!(v["polish_ae_before"].as_f64().is_some());
+    assert!(v["polish_ae_after"].as_f64().is_some());
+    assert!(v["ae_energy"].as_f64().is_some(), "ae_energy in {stdout}");
     assert!(v["score"].as_f64().unwrap() >= 0.0);
     assert!(v["elapsed_ms"].as_u64().is_some(), "elapsed_ms in {stdout}");
     fs::remove_dir_all(&dir).ok();
@@ -369,14 +381,22 @@ fn polish_refines_the_first_exploration_and_reports_itself() {
     assert_eq!(v["strategy"], "greedy");
     assert_eq!(v["polished"], true);
     let moves = v["polish_moves"].as_u64().expect("polish_moves");
+    let ae_moves = v["polish_ae_moves"].as_u64().expect("polish_ae_moves");
     assert!(
-        moves > 0,
+        moves + ae_moves > 0,
         "the drifted assignment must have improving swaps: {stdout}"
     );
     let before = v["polish_score_before"].as_f64().unwrap();
     let after = v["polish_score_after"].as_f64().unwrap();
     assert!(after < before, "polish must improve: {before} -> {after}");
     assert_eq!(v["score"].as_f64().unwrap(), after);
+    // the space-filling phase is monotone in the AE energy
+    let ae_before = v["polish_ae_before"].as_f64().unwrap();
+    let ae_after = v["polish_ae_after"].as_f64().unwrap();
+    assert!(
+        ae_after <= ae_before,
+        "phase 2 must not raise AE: {ae_before} -> {ae_after}"
+    );
 
     // the human summary reports the pass too; a second fresh pool, so
     // the wording is checked independently of the pool state
@@ -393,7 +413,10 @@ fn polish_refines_the_first_exploration_and_reports_itself() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        stdout.contains(&format!(", polished with {moves} swap(s) (was ")),
+        stdout.contains(&format!(
+            ", polished with {} swap(s) (r2 was ",
+            moves + ae_moves
+        )),
         "unexpected summary: {stdout}"
     );
     fs::remove_dir_all(&dir).ok();
