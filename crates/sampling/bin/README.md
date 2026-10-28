@@ -98,15 +98,21 @@ per bin per parameter.
 
 Because chunks (and greedy steps) are optimized one at a time, the
 finished assignment is refined afterwards by a deterministic polish pass:
-a greedy swap descent that exchanges the values of two new designs
-within one parameter, which cannot break the Latin Hypercube property.
-It runs on every greedy, mixed and batched run — including batched
+a two-phase greedy swap descent that exchanges the values of two new
+designs within one parameter, which cannot break the Latin Hypercube
+property. Phase 1 descends the pooled pair correlation score; phase 2
+descends the space-filling (Audze–Eglais) energy of the finished point
+set under a per-pair r² guard, breaking the zero-correlation X shapes
+the correlation score cannot see. The pass runs on every greedy, mixed
+and batched run — including batched
 runs of exact chunks, which are per-chunk optimal but never jointly —
 and is skipped only for single-chunk exact runs, which it provably
 cannot improve (the exact enumeration already searched the same
-assignment space). The pass stops at convergence (a sweep without an
+assignment space). Each phase stops at convergence (a sweep without an
 improving swap) or after a bounded evaluation budget. The human summary
-appends `, polished with N swap(s) (was S)` when swaps were applied.
+appends `, polished with N swap(s) (r2 was S, AE was E)` when swaps
+were applied (N counts both phases, S is the pooled pair r² and E the
+space-filling energy before the pass).
 
 Exit codes: `0` success, `1` validation error, `2` I/O error (missing
 subcommand or unknown subcommand: usage error).
@@ -129,11 +135,15 @@ The `plhs` object carries `subcommand`, `mode` (`add`/`explore`), `file`,
 `n_params`, `strategy` (`exact`/`greedy`, or `mixed` when a batched run's
 chunks used different strategies), `chunks` (how many chunks the `m` new
 designs were placed in, 1 for a single-shot run), `polished` (whether the
-post-placement refinement pass ran), `score` and `elapsed_ms`
+post-placement refinement pass ran), `score`, `ae_energy` (the
+space-filling energy of the finished point set; see the `plhs` README)
+and `elapsed_ms`
 (the compute phase only: after reading the pool, before writing it).
 When the pass ran, `polish_moves`, `polish_score_before` and
-`polish_score_after` report what it did (`score` is always the
-post-polish score). The
+`polish_score_after` report the phase-1 correlation descent, and
+`polish_ae_moves`, `polish_ae_before` and `polish_ae_after` the
+phase-2 space-filling descent (`score` is always the
+post-polish score, `ae_energy` the post-polish energy). The
 `stats` object carries
 `subcommand`, `file`, `evaluated` and the four section objects `input`,
 `pool`, `results` and `output_pairs`, mirroring the human report's

@@ -290,6 +290,7 @@ fn run(args: &PlhsArgs) -> Result<String, CliError> {
             "chunks": aug.chunks,
             "polished": aug.polish.is_some(),
             "score": aug.score,
+            "ae_energy": aug.ae_energy,
             "elapsed_ms": elapsed_ms,
         });
         // the pass reports what it did; without it there is nothing to
@@ -298,6 +299,9 @@ fn run(args: &PlhsArgs) -> Result<String, CliError> {
             report["polish_moves"] = serde_json::json!(p.moves);
             report["polish_score_before"] = serde_json::json!(p.score_before);
             report["polish_score_after"] = serde_json::json!(p.score_after);
+            report["polish_ae_moves"] = serde_json::json!(p.ae_moves);
+            report["polish_ae_before"] = serde_json::json!(p.ae_before);
+            report["polish_ae_after"] = serde_json::json!(p.ae_after);
         }
         return Ok(report.to_string());
     }
@@ -309,10 +313,12 @@ fn run(args: &PlhsArgs) -> Result<String, CliError> {
         aug.score
     );
     if let Some(p) = &aug.polish {
-        if p.moves > 0 {
+        if p.moves + p.ae_moves > 0 {
             summary.push_str(&format!(
-                ", polished with {} swap(s) (was {:.6})",
-                p.moves, p.score_before
+                ", polished with {} swap(s) (r2 was {:.6}, AE was {:.3})",
+                p.moves + p.ae_moves,
+                p.score_before,
+                p.ae_before
             ));
         }
     }

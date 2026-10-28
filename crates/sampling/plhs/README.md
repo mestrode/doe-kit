@@ -76,22 +76,48 @@ Chunks (and greedy steps) are optimized one at a time, so the finished
 assignment is improvable even when every chunk ran exact: greedy chunks
 drift, and batched exact chunks are per-chunk optimal, never jointly.
 `augment()` therefore runs a deterministic post-placement refinement
-pass after the chunk loop, before any values materialize: a greedy swap
-descent whose move exchanges the values of two new designs within one
-parameter. The per-parameter value multisets — and with them the Latin
-Hypercube property — are structurally preserved by every move. A swap in
-parameter `j` changes only the pairs involving `j`, each scored in O(1)
-from running raw sums. Sweeps scan all candidate swaps in lexicographic
-order and apply strictly improving ones immediately; the pass stops at
-the first sweep without an improvement (convergence) or when a bounded
-evaluation budget is exhausted (up to 32 sweeps, at least one, no
-randomness anywhere). A single-chunk exact run skips the pass: the exact
-enumeration already searched the whole assignment space, of which the
-descent's swap space is a subset, so it is a provable no-op there. The
-pass is the quality stage for the deficit paths of the chunked selection:
-a single greedy chunk that drifted at 2 parameters and 1000 designs
-polishes from a pooled score of 0.386 to ~1e-13 in milliseconds, and the
-forced one-design-per-chunk loop at 50 parameters gains ~20% score.
+pass after the chunk loop, before any values materialize. Its move
+exchanges the values of two new designs within one parameter; the
+per-parameter value multisets — and with them the Latin Hypercube
+property — are structurally preserved by every move. Sweeps scan all
+candidate swaps in lexicographic order and apply strictly improving
+ones immediately; the pass stops at convergence or when a bounded
+evaluation budget is exhausted (no randomness anywhere). A single-chunk
+exact run skips the pass: the exact enumeration already searched the
+whole assignment space, of which the descent's swap space is a subset,
+so it is a provable no-op there.
+
+The pass descends a combined objective in two phases:
+
+- **Phase 1 (correlation)** greedily descends the pooled pair r², the
+  score the selection optimizes. A swap in parameter `j` changes only
+  the pairs involving `j`, each scored in O(1) from running raw sums.
+- **Phase 2 (space-filling)** descends the Audze–Eglais potential
+  energy of the active point set (the designs in scope for every
+  parameter plus the new designs, on the unit cube) under a per-pair
+  r² guard. This fixes what r² cannot see: an X-shaped pair scatter —
+  two crossing lines — has zero Pearson AND zero Spearman on every
+  pair while being perfectly dependent, so inside the r² ≈ 0 manifold
+  the correlation objective is flat and the landing point is
+  trajectory-determined, not quality-determined. The guard runs an
+  ascending ladder of per-pair r² floors (1e-9, 1e-4, 1e-2, tightest
+  first, each tier to its own convergence): below the active floor the
+  two criteria trade freely, above it correlation dominates outright.
+  A tolerance tighter than the O(1/m) r² steps of the swap landscape
+  would freeze the search inside the null-correlation manifold —
+  exactly where the X lives — so the loosest floor (r² ≤ 1e-2 per
+  pair, |r| ≤ 0.1) instead spends practically null correlation
+  headroom on genuine space-filling. Phase 2 keeps its own evaluation
+  budget, counted in distance terms and shared across the ladder.
+
+The pass is the quality stage for the deficit paths of the chunked
+selection: a single greedy chunk that drifted at 2 parameters and
+1000 designs polishes from a pooled score of 0.386 to ~1e-13 in
+milliseconds, the forced one-design-per-chunk loop at 50 parameters
+gains ~20% score, and the X-shaped zero-correlation minimum of a
+fresh-pool exploration (100 designs, 3 parameters) opens from a
+pooled r² of 0.72 to 8e-5 while the AE energy drops ~7x — its
+minimum pairwise distance rises from ~0.01 to ~0.20 on the unit cube.
 
 `explore()` runs the same machinery with every parameter treated as
 uniform over its full definition range `[min, max]`: scopes and non-uniform
