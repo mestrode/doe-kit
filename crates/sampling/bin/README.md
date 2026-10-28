@@ -15,6 +15,7 @@ Currently available subcommands:
 | `init` | create a new pool file with three example parameters (`a`, `b` uniform, `c` gaussian) |
 | `plhs` | pooled Latin Hypercube Sampling (the `plhs` crate) |
 | `stats` | statistical analysis of the pool: input definitions, sampling points, evaluated results and their correlations (the `doe-stats` crate) |
+| `reset` | remove designs from the pool: the unevaluated ones (default) or all of them (`--all`) |
 
 ## Creating a new pool: `sampling init`
 
@@ -30,6 +31,30 @@ run `plhs` or `stats` on the file. The skeleton sets no `scope` (the
 full parameter ranges apply) and no `results` (nothing is evaluated
 yet), so it is immediately valid. `init` refuses to overwrite an
 existing file (validation error, exit 1); there is no `--force`.
+
+## Removing designs: `sampling reset`
+
+```sh
+sampling reset designs.json          # remove every design without a result
+sampling reset --all designs.json    # start over: remove every design
+```
+
+`reset` removes all designs that have no entry in `results` — the
+unevaluated ones; every evaluated design and all results entries are
+kept untouched. `--all` removes every design together with the whole
+`results` array and the stale `new_designs` batch record: the pool
+returns to its initial state (parameters only, empty `designs`), so
+the next `plhs` run starts at iteration 1 again. The parameters are
+never touched. The pool is written back atomically with the usual
+`<input>.bak` backup (`--no-backup` skips it); there is no confirmation
+prompt — the backup is the safety net. Removing nothing is a success:
+the command is idempotent and reports `removed 0 designs`.
+
+The human summary is `removed N designs (K kept, M results)` or, with
+`--all`, `removed all N designs and M results`. The `--json` object
+carries `subcommand`, `mode` (`unevaluated`/`all`), `file`,
+`designs_before`, `designs_after`, `results_before` and
+`results_after`.
 
 ## Usage
 
@@ -88,7 +113,8 @@ subcommand or unknown subcommand: usage error).
 
 ## Machine-readable output: `--json`
 
-Both `plhs` and `stats` accept `--json`: instead of the human summary or
+Both `plhs` and `stats` accept `--json`; `reset` does too (see its
+section above). Instead of the human summary or
 report, they print exactly one line of JSON on stdout and suppress all
 human output. Errors stay human on stderr with the usual exit codes; the
 pool is written and backed up exactly as without the flag.

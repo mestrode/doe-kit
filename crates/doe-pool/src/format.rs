@@ -299,6 +299,81 @@ pub fn parse_results(root: &Value) -> Result<Vec<Results>> {
     Ok(out)
 }
 
+/// Outcome of a pool reset ([`reset_designs`]): the design and results
+/// counts before and after the removal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResetReport {
+    /// Designs in the pool before the reset.
+    pub designs_before: usize,
+    /// Designs in the pool after the reset.
+    pub designs_after: usize,
+    /// Results entries before the reset.
+    pub results_before: usize,
+    /// Results entries after the reset (unchanged unless `all`).
+    pub results_after: usize,
+}
+
+/// Removes designs from the pool in place and reports the counts.
+///
+/// With `all = false` every design whose name has no results entry is
+/// removed — the same name-based solved-set predicate as
+/// [`append_results`]; evaluated designs and all results entries are
+/// kept untouched.
+///
+/// With `all = true` every design is removed together with the whole
+/// `results` array and the stale `new_designs` batch record: the pool
+/// returns to its initial state (parameters only, empty `designs`),
+/// so the next augmentation starts at iteration 1 again.
+///
+/// Unknown fields and key order are preserved. A missing `results` key
+/// counts as zero entries and never fails; a `designs` key that is
+/// missing or not an array is a validation error.
+pub fn reset_designs(root: &mut Value, all: bool) -> Result<ResetReport> {
+    let results = parse_results(root)?;
+    let solved: BTreeSet<&str> = results.iter().map(|r| r.name.as_str()).collect();
+    let results_before = results.len();
+
+    let designs_not_array = || invalid("'designs' must be an array");
+    let designs_before = match root.get("designs") {
+        Some(Value::Array(a)) => a.len(),
+        Some(_) => return Err(designs_not_array()),
+        None => return Err(invalid("'root' is missing the field 'designs'")),
+    };
+
+    let root_obj = root
+        .as_object_mut()
+        .ok_or_else(|| invalid("root must be a JSON object"))?;
+    let designs = root_obj
+        .get_mut("designs")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(designs_not_array)?;
+
+    let report = if all {
+        designs.clear();
+        root_obj.remove("results");
+        root_obj.remove("new_designs");
+        ResetReport {
+            designs_before,
+            designs_after: 0,
+            results_before,
+            results_after: 0,
+        }
+    } else {
+        designs.retain(|d| {
+            d.get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| solved.contains(name))
+        });
+        ResetReport {
+            designs_before,
+            designs_after: designs.len(),
+            results_before,
+            results_after: results_before,
+        }
+    };
+    Ok(report)
+}
+
 /// Appends evaluated `results` entries to the pool's `results` array.
 ///
 /// Every entry must name a design that exists in the pool and must not
@@ -415,5 +490,78 @@ mod tests {
         let params = parse_params(&root).unwrap();
         let err = append_results(&mut root, &params, &[one_result("1.1", 2.0)]).unwrap_err();
         assert!(err.to_string().contains("already exists"), "{err}");
+    }
+
+    #[test]
+    fn reset_removes_designs_without_a_results_entry() {
+        let mut root = pool();
+        root["results"] =
+            serde_json::json!([{ "name": "1.1", "linear": 1.0 }, { "name": "2.9", "linear": 2.0 }]);
+        let report = reset_designs(&mut root, false).unwrap();
+        assert_eq!(
+            report,
+            ResetReport {
+                designs_before: 2,
+                designs_after: 1,
+                results_before: 2,
+                results_after: 2,
+            }
+        );
+        let names: Vec<&str> = root["designs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["1.1"], "only the evaluated design survives");
+        // an entry naming a design that does not exist is not the
+        // reset's business: results pass through untouched
+        assert_eq!(root["results"].as_array().unwrap().len(), 2);
+        assert_eq!(root["note"], "unknown fields must survive");
+    }
+
+    #[test]
+    fn reset_without_results_removes_every_design() {
+        let mut root = pool();
+        let report = reset_designs(&mut root, false).unwrap();
+        assert_eq!(report.designs_before, 2);
+        assert_eq!(report.designs_after, 0);
+        assert_eq!(report.results_before, 0);
+        assert_eq!(report.results_after, 0);
+        assert!(root["designs"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn reset_all_returns_the_pool_to_its_initial_state() {
+        let mut root = pool();
+        root["new_designs"] = serde_json::json!([{ "name": "2.1", "a": 9.0 }]);
+        root["results"] = serde_json::json!([{ "name": "1.1", "linear": 1.0 }]);
+        let report = reset_designs(&mut root, true).unwrap();
+        assert_eq!(
+            report,
+            ResetReport {
+                designs_before: 2,
+                designs_after: 0,
+                results_before: 1,
+                results_after: 0,
+            }
+        );
+        assert!(root["designs"].as_array().unwrap().is_empty());
+        assert!(root.get("results").is_none(), "the results array is gone");
+        assert!(
+            root.get("new_designs").is_none(),
+            "the stale batch record is gone"
+        );
+        assert_eq!(root["note"], "unknown fields must survive");
+    }
+
+    #[test]
+    fn reset_all_on_a_pool_without_results_is_a_no_op_report() {
+        let mut root = pool();
+        let report = reset_designs(&mut root, true).unwrap();
+        assert_eq!(report.designs_before, 2);
+        assert_eq!(report.results_before, 0);
+        assert!(root["designs"].as_array().unwrap().is_empty());
+        assert!(root.get("results").is_none(), "no results key is created");
     }
 }

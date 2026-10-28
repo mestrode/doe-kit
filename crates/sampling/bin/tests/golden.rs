@@ -96,6 +96,18 @@ fn golden_explore_on_a_fresh_init_pool_is_reproduced_by_the_binary() {
 }
 
 #[test]
+fn golden_reset_output_is_reproduced_by_the_binary() {
+    let dir = std::env::temp_dir().join(format!("sampling-golden-reset-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    assert_golden(
+        &dir,
+        &["reset", "designs.json"],
+        "tests/fixtures/expected_reset.json",
+    );
+}
+
+#[test]
 fn golden_init_output_is_reproduced_by_the_binary() {
     let dir = std::env::temp_dir().join(format!("sampling-golden-init-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);

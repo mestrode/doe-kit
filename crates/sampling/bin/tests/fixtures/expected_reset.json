@@ -1,0 +1,62 @@
+{
+  "params": [
+    {
+      "name": "x",
+      "min": 0,
+      "max": 10,
+      "distribution": "uniform"
+    },
+    {
+      "name": "y",
+      "min": 0,
+      "max": 10,
+      "mean": 5,
+      "sigma": 2,
+      "distribution": "gaussian"
+    }
+  ],
+  "scope": [
+    {
+      "name": "x",
+      "min": 2,
+      "max": 8
+    },
+    {
+      "name": "y",
+      "min": 3,
+      "max": 7
+    }
+  ],
+  "designs": [
+    {
+      "name": "0.1",
+      "x": 0.1667,
+      "y": 9.4283
+    },
+    {
+      "name": "0.2",
+      "x": 0.5,
+      "y": 8.8566
+    },
+    {
+      "name": "0.3",
+      "x": 0.8333,
+      "y": 8.2849
+    }
+  ],
+  "new_designs": [],
+  "results": [
+    {
+      "name": "0.1",
+      "energy": 42.1
+    },
+    {
+      "name": "0.2",
+      "energy": 17.9
+    },
+    {
+      "name": "0.3",
+      "energy": 88.3
+    }
+  ]
+}

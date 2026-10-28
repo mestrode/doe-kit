@@ -1085,3 +1085,147 @@ fn add_on_50_parameters_with_scope_is_batched() {
     }
     fs::remove_dir_all(&dir).ok();
 }
+
+// ---------------------------------------------------------------- reset
+
+#[test]
+fn reset_removes_unevaluated_designs_and_keeps_results() {
+    let dir = temp_dir("reset");
+    let file = dir.join("designs.json");
+    fs::write(&file, fixture()).unwrap();
+    let original = fs::read(&file).unwrap();
+
+    let (out, stdout) = run(&dir, &["reset", "designs.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        stdout.trim_end(),
+        "removed 27 designs (3 kept, 3 results)",
+        "unexpected summary: {stdout}"
+    );
+
+    // backup equals the original input
+    assert_eq!(fs::read(dir.join("designs.json.bak")).unwrap(), original);
+
+    let root: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    let names: Vec<&str> = root["designs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        ["0.1", "0.2", "0.3"],
+        "only the evaluated designs survive"
+    );
+    assert_eq!(root["results"].as_array().unwrap().len(), 3);
+    assert!(root.get("params").is_some(), "params survive");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn reset_all_empties_the_pool_entirely() {
+    let dir = temp_dir("reset-all");
+    let file = dir.join("designs.json");
+    fs::write(&file, fixture()).unwrap();
+
+    let (out, stdout) = run(&dir, &["reset", "--all", "designs.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        stdout.trim_end(),
+        "removed all 30 designs and 3 results",
+        "unexpected summary: {stdout}"
+    );
+
+    let root: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    assert!(root["designs"].as_array().unwrap().is_empty());
+    assert!(root.get("results").is_none(), "the results array is gone");
+    assert!(
+        root.get("new_designs").is_none(),
+        "the stale batch record is gone"
+    );
+    assert!(root.get("params").is_some(), "params survive");
+    assert!(dir.join("designs.json.bak").exists());
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn reset_on_a_fresh_init_pool_is_a_no_op() {
+    let dir = temp_dir("reset-init");
+    let (out, _) = run(&dir, &["init", "pool.json"]);
+    assert!(out.status.success());
+
+    let (out, stdout) = run(&dir, &["reset", "pool.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(stdout.trim_end(), "removed 0 designs (0 kept, 0 results)");
+
+    // and the second time too: the command is idempotent
+    let (out, stdout) = run(&dir, &["reset", "pool.json"]);
+    assert!(out.status.success());
+    assert_eq!(stdout.trim_end(), "removed 0 designs (0 kept, 0 results)");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn reset_supports_no_backup_and_reports_missing_file() {
+    let dir = temp_dir("reset-flags");
+    let file = dir.join("designs.json");
+    fs::write(&file, fixture()).unwrap();
+
+    let (out, _) = run(&dir, &["reset", "--no-backup", "designs.json"]);
+    assert!(out.status.success());
+    assert!(!dir.join("designs.json.bak").exists());
+
+    let (out, _) = run(&dir, &["reset", "does-not-exist.json"]);
+    assert_eq!(out.status.code(), Some(2));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn reset_json_emits_one_machine_readable_line() {
+    let dir = temp_dir("reset-json");
+    let file = dir.join("designs.json");
+    fs::write(&file, fixture()).unwrap();
+
+    let (out, stdout) = run(&dir, &["reset", "--json", "designs.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(stdout.lines().count(), 1, "stdout: {stdout}");
+    let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
+    assert_eq!(v["subcommand"], "reset");
+    assert_eq!(v["mode"], "unevaluated");
+    assert_eq!(v["file"], "designs.json");
+    assert_eq!(v["designs_before"], 30);
+    assert_eq!(v["designs_after"], 3);
+    assert_eq!(v["results_before"], 3);
+    assert_eq!(v["results_after"], 3);
+    assert!(
+        dir.join("designs.json.bak").exists(),
+        "the pool is written and backed up as without --json"
+    );
+
+    let (out, stdout) = run(&dir, &["reset", "--all", "--json", "designs.json"]);
+    assert!(out.status.success());
+    let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
+    assert_eq!(v["mode"], "all");
+    assert_eq!(v["designs_before"], 3);
+    assert_eq!(v["designs_after"], 0);
+    assert_eq!(v["results_before"], 3);
+    assert_eq!(v["results_after"], 0);
+    fs::remove_dir_all(&dir).ok();
+}
