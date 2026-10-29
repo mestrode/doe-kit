@@ -15,7 +15,7 @@ Currently available subcommands:
 | `init` | create a new pool file with three example parameters (`a`, `b` uniform, `c` gaussian) |
 | `plhs` | pooled Latin Hypercube Sampling (the `plhs` crate) |
 | `stats` | statistical analysis of the pool: input definitions, sampling points, evaluated results and their correlations (the `doe-stats` crate) |
-| `reset` | remove designs from the pool: the unevaluated ones (default) or all of them (`--all`) |
+| `reset` | remove designs from the pool: the unevaluated ones (default) or all of them (`--force`) |
 | `remove` | remove individual designs by name, or redundant close neighbors (`--min-dist`, threshold optional) |
 | `polish` | refine the pool's unevaluated designs in place (deterministic swap descent under the combined objective; evaluated designs are fixed context) |
 
@@ -37,13 +37,13 @@ existing file (validation error, exit 1); there is no `--force`.
 ## Removing designs: `sampling reset`
 
 ```sh
-sampling reset designs.json          # remove every design without a result
-sampling reset --all designs.json    # start over: remove every design
+sampling reset designs.json            # remove every design without a result
+sampling reset --force designs.json    # start over: remove every design
 ```
 
 `reset` removes all designs that have no entry in `results` — the
 unevaluated ones; every evaluated design and all results entries are
-kept untouched. `--all` removes every design together with the whole
+kept untouched. `--force` removes every design together with the whole
 `results` array and the stale `new_designs` batch record: the pool
 returns to its initial state (parameters only, empty `designs`), so
 the next `plhs` run starts at iteration 1 again. The parameters are
@@ -53,7 +53,7 @@ prompt — the backup is the safety net. Removing nothing is a success:
 the command is idempotent and reports `removed 0 designs`.
 
 The human summary is `removed N designs (K kept, M results)` or, with
-`--all`, `removed all N designs and M results`. The `--json` object
+`--force`, `removed all N designs and M results`. The `--json` object
 carries `subcommand`, `mode` (`unevaluated`/`all`), `file`,
 `designs_before`, `designs_after`, `results_before` and
 `results_after`.

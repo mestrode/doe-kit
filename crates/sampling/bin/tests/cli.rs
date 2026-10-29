@@ -1158,12 +1158,12 @@ fn reset_removes_unevaluated_designs_and_keeps_results() {
 }
 
 #[test]
-fn reset_all_empties_the_pool_entirely() {
-    let dir = temp_dir("reset-all");
+fn reset_force_empties_the_pool_entirely() {
+    let dir = temp_dir("reset-force");
     let file = dir.join("designs.json");
     fs::write(&file, fixture()).unwrap();
 
-    let (out, stdout) = run(&dir, &["reset", "--all", "designs.json"]);
+    let (out, stdout) = run(&dir, &["reset", "--force", "designs.json"]);
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -1249,7 +1249,7 @@ fn reset_json_emits_one_machine_readable_line() {
         "the pool is written and backed up as without --json"
     );
 
-    let (out, stdout) = run(&dir, &["reset", "--all", "--json", "designs.json"]);
+    let (out, stdout) = run(&dir, &["reset", "--force", "--json", "designs.json"]);
     assert!(out.status.success());
     let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
     assert_eq!(v["mode"], "all");

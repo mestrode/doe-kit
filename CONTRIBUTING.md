@@ -66,9 +66,9 @@ cadence; publication to crates.io is manual and per crate.
   `--no-backup`, `--cap`, `--no-polish`, `--json`. Exit codes: 0 success,
   1 validation error, 2 I/O error. Keep these stable.
 - Exactly one of `--add` / `--explore` must be provided.
-- The `sampling reset` CLI contract: `sampling reset file [--all]` with
+- The `sampling reset` CLI contract: `sampling reset file [--force]` with
   options `--no-backup`, `--json`. Default removes every design without
-  a results entry; `--all` removes every design plus the whole `results`
+  a results entry; `--force` removes every design plus the whole `results`
   array and the stale `new_designs` record (pool back to its initial
   state, parameters untouched, next iteration starts at 1). Removing
   nothing is a success (idempotent, exit 0). Exit codes: 0 success,

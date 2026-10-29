@@ -12,7 +12,7 @@
 //! overwrite an existing file.
 //!
 //! `sampling reset` removes designs from the pool: every design without
-//! a results entry (the unevaluated ones), or — with `--all` — every
+//! a results entry (the unevaluated ones), or — with `--force` — every
 //! design together with the whole `results` array, returning the pool
 //! to its initial state. The parameters are untouched and the next
 //! `plhs` run starts at iteration 1 again.
@@ -96,7 +96,7 @@ enum Command {
     #[command(name = "stats")]
     Stats(StatsArgs),
     /// Remove designs from the pool: all without a results entry
-    /// (default) or every design together with the results (--all)
+    /// (default) or every design together with the results (--force)
     #[command(name = "reset")]
     Reset(ResetArgs),
     /// Remove individual designs by name, or redundant close
@@ -175,7 +175,7 @@ struct ResetArgs {
     /// returning the pool to its initial state (params only, empty
     /// `designs`, the next augmentation starts at iteration 1 again).
     #[arg(long)]
-    all: bool,
+    force: bool,
     /// Skip writing the backup file.
     #[arg(long)]
     no_backup: bool,
@@ -440,7 +440,7 @@ fn run_stats(args: &StatsArgs) -> Result<String, CliError> {
 }
 
 /// Removes designs from the pool: every design without a results entry,
-/// or — with `--all` — every design together with the whole `results`
+/// or — with `--force` — every design together with the whole `results`
 /// array. The parameters are untouched; the pool is written back with
 /// the usual `.bak` backup. Removing nothing succeeds (idempotent).
 fn run_reset(args: &ResetArgs) -> Result<String, CliError> {
@@ -449,7 +449,7 @@ fn run_reset(args: &ResetArgs) -> Result<String, CliError> {
     // anything is removed
     let params = doe_pool::format::parse_params(&root).map_err(validation)?;
     let _designs = doe_pool::format::parse_designs(&root, &params).map_err(validation)?;
-    let report = doe_pool::format::reset_designs(&mut root, args.all).map_err(validation)?;
+    let report = doe_pool::format::reset_designs(&mut root, args.force).map_err(validation)?;
 
     if !args.no_backup {
         doe_pool::backup(&args.file, &bytes).map_err(pool)?;
@@ -460,7 +460,7 @@ fn run_reset(args: &ResetArgs) -> Result<String, CliError> {
     if args.json {
         return Ok(serde_json::json!({
             "subcommand": "reset",
-            "mode": if args.all { "all" } else { "unevaluated" },
+            "mode": if args.force { "all" } else { "unevaluated" },
             "file": args.file.display().to_string(),
             "designs_before": report.designs_before,
             "designs_after": report.designs_after,
@@ -470,7 +470,7 @@ fn run_reset(args: &ResetArgs) -> Result<String, CliError> {
         .to_string());
     }
 
-    if args.all {
+    if args.force {
         return Ok(format!(
             "removed all {} designs and {} results",
             report.designs_before, report.results_before
