@@ -16,7 +16,10 @@
 //!   filling metrics in the unit cube (min, mean and median pairwise
 //!   distance, mean nearest-neighbor distance, centered L2
 //!   discrepancy), Pearson and Spearman correlation per parameter
-//!   pair, and the pooled pair r2 (the plhs score readable back on the
+//!   pair, the population distance correlation per parameter pair
+//!   (which detects zero-correlation dependence — an X-shaped scatter
+//!   reads ~0 on both correlations while being perfectly dependent),
+//!   and the pooled pair r2 (the plhs score readable back on the
 //!   pool). It answers "how well are the generated sampling points
 //!   distributed, and do they correlate?" before anything has been
 //!   evaluated.
@@ -204,6 +207,14 @@ pub struct PoolStats {
     /// Largest absolute Spearman rank correlation over all parameter
     /// pairs; `None` when no pair correlation is defined.
     pub max_abs_spearman: Option<f64>,
+    /// Largest distance correlation over all parameter pairs; `None`
+    /// when no pair correlation is defined (same gate as
+    /// [`Self::max_abs_pearson`]). The compact dependence summary of
+    /// the pair list: a value near zero with a substantial `max_abs_pearson`
+    /// is impossible (dependence subsumes correlation), while the
+    /// reverse — near-zero correlations with a substantial dCor — is the
+    /// X-shaped scatter signature.
+    pub max_dcor: Option<f64>,
 }
 
 /// Descriptive statistics of one parameter's sampling points.
@@ -240,6 +251,12 @@ pub struct PairCorrelation {
     pub pearson: Option<f64>,
     /// Spearman rank correlation; same conditions as [`Self::pearson`].
     pub spearman: Option<f64>,
+    /// Population (biased) distance correlation; same conditions as
+    /// [`Self::pearson`] (n/a below 3 designs or without variance, not
+    /// 0). Catches zero-correlation dependence: an X-shaped pair
+    /// scatter reads ~0 on both correlations while being perfectly
+    /// dependent, and dCor sees it.
+    pub dcor: Option<f64>,
 }
 
 /// Analyzes the pool's sampling points (`designs`) themselves: how well
@@ -365,11 +382,19 @@ pub fn analyze_pool(params: &[Parameter], designs: &[Design]) -> Result<PoolStat
             let ys: Vec<f64> = designs.iter().map(|d| d.values[b]).collect();
             let pearson = correlation(&xs, &ys, n);
             let spearman = correlation(&ranks(&xs), &ranks(&ys), n);
+            // the dependence statistic shares the correlation gates:
+            // n/a below 3 designs or without variance in either series
+            let dcor = if n < 3 || variance_is_zero(&xs) || variance_is_zero(&ys) {
+                None
+            } else {
+                distance_correlation(&xs, &ys)
+            };
             pairs.push(PairCorrelation {
                 a: params[a].name.clone(),
                 b: params[b].name.clone(),
                 pearson,
                 spearman,
+                dcor,
             });
         }
     }
@@ -382,8 +407,10 @@ pub fn analyze_pool(params: &[Parameter], designs: &[Design]) -> Result<PoolStat
     let mut pooled_pair_r2 = 0.0;
     let mut max_abs_pearson = 0.0_f64;
     let mut max_abs_spearman = 0.0_f64;
+    let mut max_dcor = 0.0_f64;
     let mut any_pearson = false;
     let mut any_spearman = false;
+    let mut any_dcor = false;
     for pair in &pairs {
         if let Some(r) = pair.pearson {
             pooled_pair_r2 += r * r;
@@ -394,10 +421,15 @@ pub fn analyze_pool(params: &[Parameter], designs: &[Design]) -> Result<PoolStat
             max_abs_spearman = max_abs_spearman.max(s.abs());
             any_spearman = true;
         }
+        if let Some(d) = pair.dcor {
+            max_dcor = max_dcor.max(d);
+            any_dcor = true;
+        }
     }
     let pooled_pair_r2 = any_pearson.then_some(pooled_pair_r2);
     let max_abs_pearson = any_pearson.then_some(max_abs_pearson);
     let max_abs_spearman = any_spearman.then_some(max_abs_spearman);
+    let max_dcor = any_dcor.then_some(max_dcor);
 
     // empty decile slots over all parameters: the compact occupancy
     // summary of the per-parameter decile counts
@@ -419,7 +451,54 @@ pub fn analyze_pool(params: &[Parameter], designs: &[Design]) -> Result<PoolStat
         empty_decile_slots,
         max_abs_pearson,
         max_abs_spearman,
+        max_dcor,
     })
+}
+
+/// Population (biased) distance correlation of two series — the standard
+/// dCor of Székely et al.: the distance covariance of the double-centered
+/// pairwise distance matrices over the product of their distance standard
+/// deviations, all moments with the `1/n^2` biased (population)
+/// denominator. Unlike Pearson and Spearman it detects dependence
+/// without linear or monotonic structure (an X-shaped scatter reads ~0
+/// on both correlations while being perfectly dependent). O(n^2).
+/// `None` when either series has zero distance variance (a constant
+/// series; then the ratio is undefined).
+fn distance_correlation(xs: &[f64], ys: &[f64]) -> Option<f64> {
+    let n = xs.len();
+    // double-centered pairwise distance matrix:
+    // a_ij = d_ij - row_mean_i - col_mean_j + grand_mean
+    let centered = |v: &[f64]| -> Vec<Vec<f64>> {
+        let d: Vec<Vec<f64>> = (0..n)
+            .map(|i| (0..n).map(|j| (v[i] - v[j]).abs()).collect())
+            .collect();
+        let row: Vec<f64> = d.iter().map(|r| r.iter().sum::<f64>() / n as f64).collect();
+        let col: Vec<f64> = (0..n)
+            .map(|j| d.iter().map(|r| r[j]).sum::<f64>() / n as f64)
+            .collect();
+        let grand = row.iter().sum::<f64>() / n as f64;
+        (0..n)
+            .map(|i| (0..n).map(|j| d[i][j] - row[i] - col[j] + grand).collect())
+            .collect()
+    };
+    let a = centered(xs);
+    let b = centered(ys);
+    let (mut cov, mut var_x, mut var_y) = (0.0, 0.0, 0.0);
+    for i in 0..n {
+        for j in 0..n {
+            cov += a[i][j] * b[i][j];
+            var_x += a[i][j] * a[i][j];
+            var_y += b[i][j] * b[i][j];
+        }
+    }
+    let nn = (n * n) as f64;
+    let cov = cov / nn;
+    let sd_x = (var_x / nn).sqrt();
+    let sd_y = (var_y / nn).sqrt();
+    if sd_x <= 0.0 || sd_y <= 0.0 {
+        return None;
+    }
+    Some((cov / (sd_x * sd_y)).clamp(0.0, 1.0))
 }
 
 /// Euclidean distance between two points of the unit cube.
@@ -1646,6 +1725,116 @@ mod tests {
         let pool = analyze_pool(&params, &designs).unwrap();
         assert!((pool.max_abs_pearson.unwrap() - 1.0).abs() < 1e-12);
         assert!((pool.max_abs_spearman.unwrap() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dcor_is_one_for_a_linear_pair() {
+        let params = vec![param("x", 0.0, 10.0), param("y", 0.0, 10.0)];
+        // y = 2x: distance matrices are proportional, dcor = 1
+        let designs: Vec<Design> = [1.0, 2.0, 3.0, 4.0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, x)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![x, 2.0 * x],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &designs).unwrap();
+        assert!(
+            (pool.pairs[0].dcor.unwrap() - 1.0).abs() < 1e-9,
+            "{:?}",
+            pool.pairs[0]
+        );
+        assert!((pool.max_dcor.unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn dcor_sees_the_dependence_the_correlations_miss() {
+        let params = vec![param("x", 0.0, 10.0), param("y", 0.0, 10.0)];
+        // the V-shape: y rises then falls; pearson and spearman are
+        // exactly 0 while y is a function of x. The population dcor of
+        // this 4-point set is 1/sqrt(13) (dyadic arithmetic is exact)
+        let designs: Vec<Design> = [(0.0, 0.0), (1.0, 1.0), (2.0, 1.0), (3.0, 0.0)]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (x, y))| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![x, y],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &designs).unwrap();
+        let pair = &pool.pairs[0];
+        assert_eq!(pair.pearson, Some(0.0), "{pair:?}");
+        assert_eq!(pair.spearman, Some(0.0), "{pair:?}");
+        let expected = 1.0_f64 / 13.0_f64.sqrt();
+        assert!((pair.dcor.unwrap() - expected).abs() < 1e-12, "{pair:?}");
+        assert!((pool.max_dcor.unwrap() - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dcor_is_none_below_three_designs_or_without_variance() {
+        let params = vec![param("x", 0.0, 10.0), param("y", 0.0, 10.0)];
+        // n < 3: undefined
+        let short: Vec<Design> = [(1.0, 1.0), (2.0, 2.0)]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (x, y))| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![x, y],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &short).unwrap();
+        assert_eq!(pool.pairs[0].dcor, None);
+        assert_eq!(pool.max_dcor, None);
+
+        // zero variance in one series: undefined, not 0
+        let flat: Vec<Design> = [(5.0, 1.0), (5.0, 2.0), (5.0, 3.0)]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (x, y))| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![x, y],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &flat).unwrap();
+        assert_eq!(pool.pairs[0].dcor, None);
+        assert_eq!(pool.max_dcor, None);
+    }
+
+    #[test]
+    fn max_dcor_takes_the_maximum_over_defined_pairs_only() {
+        let params = vec![
+            param("x", 0.0, 10.0),
+            param("y", 0.0, 10.0),
+            param("z", 0.0, 10.0),
+        ];
+        // x is flat: its pairs are undefined; y = 2z contributes dcor 1
+        let designs: Vec<Design> = [1.0, 2.0, 3.0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, y)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![5.0, y, 2.0 * y],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &designs).unwrap();
+        assert_eq!(pool.pairs[0].dcor, None); // x vs y
+        assert_eq!(pool.pairs[1].dcor, None); // x vs z
+        assert!((pool.pairs[2].dcor.unwrap() - 1.0).abs() < 1e-9); // y vs z
+        assert!((pool.max_dcor.unwrap() - 1.0).abs() < 1e-9);
+
+        // a single parameter: no pair at all, the maximum is undefined
+        let params = vec![param("x", 0.0, 10.0)];
+        let designs: Vec<Design> = [1.0, 2.0, 3.0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, x)| Design {
+                name: format!("0.{}", i + 1),
+                values: vec![x],
+            })
+            .collect();
+        let pool = analyze_pool(&params, &designs).unwrap();
+        assert_eq!(pool.max_dcor, None);
     }
 
     #[test]

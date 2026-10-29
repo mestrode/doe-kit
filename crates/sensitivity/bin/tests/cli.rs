@@ -656,6 +656,44 @@ fn output_json_reports_results_and_pairs() {
 }
 
 // ---------------------------------------------------------------------
+// distance correlation (dCor)
+// ---------------------------------------------------------------------
+
+#[test]
+fn dcor_reports_the_pair_dependence_in_both_tiers() {
+    let dir = temp_dir("dcor");
+    write_fixture(&dir, "pool.json");
+
+    // compact: the pairs line gains the max dCor summary
+    let (out, stdout) = run(&dir, &["sampling", "pool.json"]);
+    assert!(out.status.success(), "stderr: {}", stderr_of(&out));
+    assert!(stdout.contains(", max dCor "), "stdout: {stdout}");
+    assert!(!stdout.contains("x vs y: pearson"), "stdout: {stdout}");
+
+    // verbose: every pair line carries dCor
+    let (out, stdout) = run(&dir, &["sampling", "--verbose", "pool.json"]);
+    assert!(out.status.success(), "stderr: {}", stderr_of(&out));
+    assert!(stdout.contains("x vs y: pearson "), "stdout: {stdout}");
+    assert!(stdout.contains(", dCor "), "stdout: {stdout}");
+
+    // json: the compact pool object carries max_dcor (the pair list is
+    // pruned), the verbose pair entries carry dcor
+    let (out, stdout) = run(&dir, &["sampling", "--json", "pool.json"]);
+    assert!(out.status.success(), "stderr: {}", stderr_of(&out));
+    let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
+    assert!(v["pool"]["max_dcor"].is_number(), "{v}");
+    assert!(v["pool"]["pairs"].is_null(), "{v}");
+
+    let (out, stdout) = run(&dir, &["sampling", "--json", "--verbose", "pool.json"]);
+    assert!(out.status.success(), "stderr: {}", stderr_of(&out));
+    let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
+    let pairs = v["pool"]["pairs"].as_array().unwrap();
+    assert_eq!(pairs.len(), 1);
+    assert!(pairs[0]["dcor"].is_number(), "{v}");
+    fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------
 // CLI contract
 // ---------------------------------------------------------------------
 

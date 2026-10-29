@@ -358,7 +358,8 @@ noscript { display: block; padding: 1rem; color: var(--warn); }
       ['empty decile slots', pool.empty_decile_slots + ' of ' + pool.parameters.length * 10],
       ['pairs', (pool.pairs || []).length + ', max |pearson| ' +
        opt(pool.max_abs_pearson, 'n/a') + ', max |spearman| ' +
-       opt(pool.max_abs_spearman, 'n/a')]
+       opt(pool.max_abs_spearman, 'n/a') + ', max dCor ' +
+       opt(pool.max_dcor, 'n/a')]
     ];
     var metrics = el('div', 'card');
     metrics.appendChild(el('h3', null, 'sampling points'));
@@ -455,11 +456,11 @@ noscript { display: block; padding: 1rem; color: var(--warn); }
           td.style.background = corrColor(pr.pearson);
           if (Math.abs(pr.pearson) > 0.6) { td.style.color = '#fff'; }
           td.title = rp.name + ' vs ' + cp.name + ': pearson ' + fmt(pr.pearson) +
-            ', spearman ' + fmt(pr.spearman);
+            ', spearman ' + fmt(pr.spearman) + ', dCor ' + fmt(pr.dcor);
           if (showValues) { td.textContent = pr.pearson.toFixed(3); }
         } else {
           td.style.background = '#eceff1';
-          td.title = rp.name + ' vs ' + cp.name + ': pearson n/a, spearman n/a';
+          td.title = rp.name + ' vs ' + cp.name + ': pearson n/a, spearman n/a, dCor n/a';
           if (showValues) { td.textContent = '\u2013'; }
         }
         td.addEventListener('click', function () {

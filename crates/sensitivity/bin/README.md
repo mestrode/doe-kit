@@ -102,8 +102,14 @@ Sampling (verbatim the `sampling stats` sampling-points block): the
 pool line with total, evaluated count and designs per parameter, the
 space-filling metrics (pairwise distances, nearest neighbor), the CL2
 discrepancy, the pooled pair r2, decile occupancy, and the parameter
-pair summary; `--verbose` adds per-parameter descriptive statistics,
-decile counts and every parameter pair. Requires at least one design.
+pair summary with the maximum absolute Pearson and Spearman
+correlation and the maximum distance correlation dCor (the dependence
+statistic that catches what the correlations cannot see — an
+X-shaped pair scatter reads ~0 on both while being perfectly
+dependent); `--verbose` adds per-parameter descriptive statistics,
+decile counts and every parameter pair with its Pearson and Spearman
+correlation and dCor (n/a below 3 designs or without variance).
+Requires at least one design.
 
 Output (verbatim the `sampling stats` results block) plus the
 output↔output correlations: every pair of result variables gets a
@@ -150,4 +156,5 @@ object carries `extremes` (`min_design`, `max_design`) and `relations`
 follow the tiering: the default is the compact object (the pool and
 the output pairs carry `n_pairs` instead of their detail lists; each
 result drops its `parameters`), `--json --verbose` the full one —
-including the per-parameter `eta2`.
+including the per-parameter `eta2`, the per-pair `dcor` and the
+pool's `max_dcor` (which the compact object carries too).
