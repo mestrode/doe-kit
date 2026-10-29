@@ -167,3 +167,37 @@ fn golden_polish_output_is_reproduced_by_the_binary() {
     );
     fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn golden_remove_min_dist_output_is_reproduced_by_the_binary() {
+    let dir = std::env::temp_dir().join(format!("sampling-golden-remove-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("pool.json");
+    fs::write(
+        &input,
+        fs::read("tests/fixtures/remove_input.json").unwrap(),
+    )
+    .unwrap();
+
+    let out = Command::new(BIN)
+        .args(["remove", "--min-dist=0.01", "pool.json"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // byte-for-byte: same binary, same input => same removed pool
+    let produced = fs::read_to_string(&input).unwrap();
+    let expected = fs::read_to_string("tests/fixtures/expected_remove.json").unwrap();
+    assert_eq!(
+        produced, expected,
+        "remove output differs; if the algorithm changed intentionally, \
+         regenerate tests/fixtures/expected_remove.json with the sampling binary"
+    );
+    fs::remove_dir_all(dir).ok();
+}

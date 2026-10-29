@@ -15,6 +15,7 @@
 
 pub mod error;
 pub mod format;
+pub mod remove;
 
 use std::path::Path;
 

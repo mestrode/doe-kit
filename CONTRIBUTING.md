@@ -73,6 +73,28 @@ cadence; publication to crates.io is manual and per crate.
   state, parameters untouched, next iteration starts at 1). Removing
   nothing is a success (idempotent, exit 0). Exit codes: 0 success,
   1 validation error, 2 I/O error. Keep these stable.
+- The `sampling remove` CLI contract: `sampling remove file name...`
+  (named mode) or `sampling remove file --min-dist[=N]` (min-dist
+  mode; the value attaches with `=` because it is optional) with
+  options `--force`, `--no-backup`, `--json`. The modes are mutually
+  exclusive (both = validation error exit 1); neither is a usage
+  error. Named mode removes the named designs all-or-nothing (unknown
+  names = validation error listing them, nothing removed); a design
+  with a results entry requires `--force` and is then removed together
+  with its entry. Min-dist mode thins pairs below the threshold
+  (Euclidean, definition-range unit cube): explicit `N`, or 10% of the
+  pool's mean nearest-neighbor distance when `N` is omitted (frozen
+  once per run; `N` must be greater than zero), one removal per
+  iteration from the globally closest actionable pair, victim = the
+  unevaluated member of a mixed pair, else the smaller
+  nearest-other-design distance (tie = lexicographically first name);
+  evaluated designs are protected unless `--force`. A no-op removes
+  nothing, writes nothing (no rewrite, no backup, exit 0). The
+  `--json` object carries `subcommand`, `mode` (`named`/`min-dist`),
+  `file`, `designs_before`, `designs_after`, `results_before`,
+  `results_after`, plus the effective `threshold` in min-dist mode
+  only. Exit codes: 0 success, 1 validation error, 2 I/O error. Keep
+  these stable.
 - The `sampling polish` CLI contract: `sampling polish file` with
   options `--no-backup`, `--json`. It refines every design without a
   results entry (evaluated designs are fixed context, their values
