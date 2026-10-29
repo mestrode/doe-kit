@@ -17,6 +17,16 @@
 //! to its initial state. The parameters are untouched and the next
 //! `plhs` run starts at iteration 1 again.
 //!
+//! `sampling remove` removes individual designs by name, or — with
+//! `--min-dist [N]` — every design that duplicates a neighbor: pairs
+//! closer than the threshold (Euclidean, unit cube) are thinned one
+//! design at a time, each removal decided against the new situation,
+//! the unevaluated member of a mixed pair first, then the one more
+//! redundant with the rest of the pool. Evaluated designs are
+//! protected unless `--force` is given; removed designs with results
+//! entries take their entries with them. A no-op leaves the file
+//! untouched.
+//!
 //! `sampling polish` refines the pool's unevaluated designs in place:
 //! the deterministic swap descent of the combined objective (pooled pair
 //! r², then space-filling energy under the τ guards) applied to the pool
@@ -89,6 +99,10 @@ enum Command {
     /// (default) or every design together with the results (--force)
     #[command(name = "reset")]
     Reset(ResetArgs),
+    /// Remove individual designs by name, or redundant close
+    /// neighbors (--min-dist, threshold optional)
+    #[command(name = "remove")]
+    Remove(RemoveArgs),
     /// Refine the pool's unevaluated designs in place (deterministic
     /// swap descent under the combined objective; evaluated designs are
     /// fixed context)
@@ -172,6 +186,36 @@ struct ResetArgs {
 }
 
 #[derive(Args)]
+struct RemoveArgs {
+    /// Input JSON file; also the output file.
+    file: PathBuf,
+    /// Design names to remove (named mode); at least one unless
+    /// --min-dist is given.
+    #[arg(required_unless_present = "min_dist")]
+    names: Vec<String>,
+    /// Remove redundant close-neighbor designs (min-dist mode); N is
+    /// the absolute distance threshold in the unit cube (Euclidean,
+    /// definition-range normalized), attached with `=` because the
+    /// value is optional. Without N the threshold is 10% of the pool's
+    /// mean nearest-neighbor distance. Outer `Some` = the flag is
+    /// present, inner = the given value.
+    #[arg(long, value_name = "N", num_args = 0..=1, require_equals = true)]
+    min_dist: Option<Option<f64>>,
+    /// Allow removing designs that carry results entries; their
+    /// entries are removed with them. Without --force such designs
+    /// are refused by name and never touched in --min-dist mode.
+    #[arg(long)]
+    force: bool,
+    /// Skip writing the backup file.
+    #[arg(long)]
+    no_backup: bool,
+    /// Print one line of machine-readable JSON instead of the human
+    /// summary (for benchmarks and result collection).
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
 struct PolishArgs {
     /// Input JSON file; also the output file.
     file: PathBuf,
@@ -191,6 +235,7 @@ fn main() -> ExitCode {
         Command::Plhs(args) => run(&args),
         Command::Stats(args) => run_stats(&args),
         Command::Reset(args) => run_reset(&args),
+        Command::Remove(args) => run_remove(&args),
         Command::Polish(args) => run_polish(&args),
     };
     match result {
@@ -436,6 +481,75 @@ fn run_reset(args: &ResetArgs) -> Result<String, CliError> {
         report.designs_before - report.designs_after,
         report.designs_after,
         report.results_before
+    ))
+}
+
+/// Removes individual designs from the pool: the named ones (named
+/// mode, all-or-nothing, results entries need `--force` and go with
+/// the design), or redundant close neighbors (`--min-dist`, threshold
+/// optional — 10% of the mean nearest-neighbor distance by default).
+/// The pool is written back with the usual `.bak` backup; a no-op
+/// (nothing removed) writes nothing.
+fn run_remove(args: &RemoveArgs) -> Result<String, CliError> {
+    // exactly one mode: named designs or the neighbor threshold
+    if !args.names.is_empty() && args.min_dist.is_some() {
+        return Err(CliError::Validation(
+            "design names and --min-dist are mutually exclusive; give exactly one mode".to_owned(),
+        ));
+    }
+    let (bytes, mut root) = doe_pool::read(&args.file).map_err(pool)?;
+    // validate the pool structure first so invalid files fail before
+    // anything is removed
+    let params = doe_pool::format::parse_params(&root).map_err(validation)?;
+    let _designs = doe_pool::format::parse_designs(&root, &params).map_err(validation)?;
+    let report = match args.min_dist {
+        Some(explicit) => {
+            doe_pool::remove::remove_min_dist(&mut root, &params, explicit, args.force)
+                .map_err(validation)?
+        }
+        None => doe_pool::remove::remove_designs(&mut root, &args.names, args.force)
+            .map_err(validation)?,
+    };
+    let removed = report.designs_before - report.designs_after;
+
+    // a no-op writes nothing — the polish contract
+    if removed > 0 {
+        if !args.no_backup {
+            doe_pool::backup(&args.file, &bytes).map_err(pool)?;
+        }
+        let out_bytes = doe_pool::serialize(&root).map_err(pool)?;
+        doe_pool::write_atomic(&args.file, &out_bytes).map_err(pool)?;
+    }
+
+    if args.json {
+        let mut json = serde_json::json!({
+            "subcommand": "remove",
+            "mode": if args.min_dist.is_some() { "min-dist" } else { "named" },
+            "file": args.file.display().to_string(),
+            "designs_before": report.designs_before,
+            "designs_after": report.designs_after,
+            "results_before": report.results_before,
+            "results_after": report.results_after,
+        });
+        if let Some(threshold) = report.threshold {
+            json["threshold"] = serde_json::json!(threshold);
+        }
+        return Ok(json.to_string());
+    }
+
+    if args.min_dist.is_some() {
+        let threshold = report
+            .threshold
+            .map(|t| format!("{t:.6}"))
+            .unwrap_or_else(|| "n/a".to_owned());
+        return Ok(format!(
+            "removed {removed} designs (neighbor threshold {threshold}, {} kept, {} results)",
+            report.designs_after, report.results_after
+        ));
+    }
+    Ok(format!(
+        "removed {removed} designs ({} kept, {} results)",
+        report.designs_after, report.results_after
     ))
 }
 

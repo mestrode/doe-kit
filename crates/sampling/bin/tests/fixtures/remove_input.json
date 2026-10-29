@@ -1,0 +1,49 @@
+{
+  "params": [
+    {
+      "name": "x",
+      "min": 0,
+      "max": 10,
+      "distribution": "uniform"
+    },
+    {
+      "name": "y",
+      "min": 0,
+      "max": 10,
+      "distribution": "uniform"
+    }
+  ],
+  "designs": [
+    {
+      "name": "0.1",
+      "x": 1.0,
+      "y": 1.0
+    },
+    {
+      "name": "0.2",
+      "x": 1.05,
+      "y": 1.0
+    },
+    {
+      "name": "0.3",
+      "x": 5.0,
+      "y": 5.0
+    },
+    {
+      "name": "0.4",
+      "x": 5.06,
+      "y": 5.0
+    },
+    {
+      "name": "0.5",
+      "x": 9.0,
+      "y": 9.0
+    }
+  ],
+  "results": [
+    {
+      "name": "0.1",
+      "linear": 2.356
+    }
+  ]
+}

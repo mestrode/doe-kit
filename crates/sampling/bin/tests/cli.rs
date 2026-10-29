@@ -1477,3 +1477,353 @@ fn polish_flags_and_exit_codes() {
     );
     fs::remove_dir_all(&dir).ok();
 }
+
+// -- remove ---------------------------------------------------------------
+
+/// The remove fixtures: an evaluated design with an unevaluated
+/// near-duplicate, an unevaluated pair of close neighbors, and an
+/// isolated design (the committed fixture is also the golden input).
+fn remove_pool() -> String {
+    fs::read_to_string("tests/fixtures/remove_input.json").unwrap()
+}
+
+/// Two evaluated designs close together plus an isolated unevaluated
+/// one — the force test geometry.
+fn remove_force_pool() -> String {
+    r#"{
+        "params": [
+            { "name": "x", "min": 0, "max": 10, "distribution": "uniform" },
+            { "name": "y", "min": 0, "max": 10, "distribution": "uniform" }
+        ],
+        "designs": [
+            { "name": "0.1", "x": 1.0, "y": 1.0 },
+            { "name": "0.2", "x": 1.02, "y": 1.0 },
+            { "name": "0.3", "x": 9.0, "y": 9.0 }
+        ],
+        "results": [
+            { "name": "0.1", "linear": 1.0 },
+            { "name": "0.2", "linear": 1.0 }
+        ]
+    }"#
+    .to_owned()
+}
+
+#[test]
+fn remove_named_removes_designs_and_backs_up() {
+    let dir = temp_dir("remove-named");
+    let file = dir.join("designs.json");
+    fs::write(&file, fixture()).unwrap();
+    let original = fs::read(&file).unwrap();
+
+    let (out, stdout) = run(&dir, &["remove", "designs.json", "0.4", "0.5"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        stdout.trim_end(),
+        "removed 2 designs (28 kept, 3 results)",
+        "unexpected summary: {stdout}"
+    );
+
+    assert_eq!(fs::read(dir.join("designs.json.bak")).unwrap(), original);
+    let root: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(root["designs"].as_array().unwrap().len(), 28);
+    assert_eq!(root["results"].as_array().unwrap().len(), 3);
+    assert!(root.get("params").is_some(), "params survive");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn remove_named_unknown_name_exits_1_without_touching_the_file() {
+    let dir = temp_dir("remove-unknown");
+    let file = dir.join("designs.json");
+    fs::write(&file, fixture()).unwrap();
+    let original = fs::read(&file).unwrap();
+
+    let (out, _) = run(&dir, &["remove", "designs.json", "99.9", "0.4"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("99.9"), "stderr: {stderr}");
+    assert!(stderr.contains("unknown"), "stderr: {stderr}");
+    // all-or-nothing: the valid name was not removed either
+    assert_eq!(fs::read(&file).unwrap(), original, "file untouched");
+    assert!(!dir.join("designs.json.bak").exists());
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn remove_named_results_entries_require_force() {
+    let dir = temp_dir("remove-force-refuse");
+    let file = dir.join("designs.json");
+    fs::write(&file, fixture()).unwrap();
+    let original = fs::read(&file).unwrap();
+
+    let (out, _) = run(&dir, &["remove", "designs.json", "0.1", "0.2"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("0.1"), "stderr: {stderr}");
+    assert!(stderr.contains("0.2"), "stderr: {stderr}");
+    assert!(stderr.contains("--force"), "stderr: {stderr}");
+    assert_eq!(fs::read(&file).unwrap(), original, "file untouched");
+    assert!(!dir.join("designs.json.bak").exists());
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn remove_named_force_drops_the_results_entries() {
+    let dir = temp_dir("remove-force");
+    let file = dir.join("designs.json");
+    fs::write(&file, fixture()).unwrap();
+
+    let (out, stdout) = run(&dir, &["remove", "--force", "designs.json", "0.1"]);
+    assert!(out.status.success());
+    assert_eq!(
+        stdout.trim_end(),
+        "removed 1 designs (29 kept, 2 results)",
+        "unexpected summary: {stdout}"
+    );
+
+    let root: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    let names: Vec<&str> = root["designs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&"0.1"), "the design is gone");
+    assert_eq!(names.len(), 29);
+    let solved: Vec<&str> = root["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert!(!solved.contains(&"0.1"), "the entry went with the design");
+    assert_eq!(solved.len(), 2);
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn remove_named_json_reports_the_key_set() {
+    let dir = temp_dir("remove-json");
+    let file = dir.join("designs.json");
+    fs::write(&file, fixture()).unwrap();
+
+    let (out, stdout) = run(&dir, &["remove", "--json", "designs.json", "0.4"]);
+    assert!(out.status.success());
+    assert_eq!(stdout.lines().count(), 1, "stdout: {stdout}");
+    let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
+    let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "designs_after",
+            "designs_before",
+            "file",
+            "mode",
+            "results_after",
+            "results_before",
+            "subcommand"
+        ],
+        "the named mode has no threshold key"
+    );
+    assert_eq!(v["subcommand"], "remove");
+    assert_eq!(v["mode"], "named");
+    assert_eq!(v["file"], "designs.json");
+    assert_eq!(v["designs_before"], 30);
+    assert_eq!(v["designs_after"], 29);
+    assert_eq!(v["results_before"], 3);
+    assert_eq!(v["results_after"], 3);
+    assert!(dir.join("designs.json.bak").exists());
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn remove_needs_exactly_one_mode() {
+    let dir = temp_dir("remove-usage");
+    let file = dir.join("designs.json");
+    fs::write(&file, fixture()).unwrap();
+
+    // neither names nor --min-dist: usage error
+    let (out, _) = run(&dir, &["remove", "designs.json"]);
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.to_lowercase().contains("required"),
+        "stderr: {stderr}"
+    );
+
+    // both: validation error
+    let (out, _) = run(&dir, &["remove", "--min-dist=0.1", "designs.json", "0.4"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("mutually exclusive"), "stderr: {stderr}");
+
+    // a non-positive threshold is a validation error
+    let (out, _) = run(&dir, &["remove", "--min-dist=0", "designs.json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("greater than zero"), "stderr: {stderr}");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn remove_min_dist_removes_close_neighbors() {
+    let dir = temp_dir("remove-min-dist");
+    let file = dir.join("pool.json");
+    fs::write(&file, remove_pool()).unwrap();
+    let original = fs::read(&file).unwrap();
+
+    let (out, stdout) = run(&dir, &["remove", "--min-dist=0.01", "pool.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        stdout.trim_end(),
+        "removed 2 designs (neighbor threshold 0.010000, 3 kept, 1 results)",
+        "unexpected summary: {stdout}"
+    );
+    assert_eq!(fs::read(dir.join("pool.json.bak")).unwrap(), original);
+
+    let root: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    let names: Vec<&str> = root["designs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap())
+        .collect();
+    // 0.2 is the unevaluated near-duplicate of the evaluated 0.1;
+    // 0.4 is the more redundant member of the close unevaluated pair
+    assert_eq!(names, ["0.1", "0.3", "0.5"]);
+    assert_eq!(root["results"].as_array().unwrap().len(), 1);
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn remove_min_dist_noop_writes_nothing() {
+    let dir = temp_dir("remove-noop");
+    let file = dir.join("pool.json");
+    fs::write(
+        &file,
+        r#"{
+            "params": [
+                { "name": "x", "min": 0, "max": 10, "distribution": "uniform" },
+                { "name": "y", "min": 0, "max": 10, "distribution": "uniform" }
+            ],
+            "designs": [
+                { "name": "0.1", "x": 0.0, "y": 0.0 },
+                { "name": "0.2", "x": 10.0, "y": 10.0 }
+            ]
+        }"#,
+    )
+    .unwrap();
+    let original = fs::read(&file).unwrap();
+
+    // default threshold = 10% of the mean nearest-neighbor distance;
+    // the two designs are far apart, nothing is below it
+    let (out, stdout) = run(&dir, &["remove", "--min-dist", "pool.json"]);
+    assert!(out.status.success());
+    assert_eq!(
+        stdout.trim_end(),
+        "removed 0 designs (neighbor threshold 0.141421, 2 kept, 0 results)",
+        "unexpected summary: {stdout}"
+    );
+    assert_eq!(fs::read(&file).unwrap(), original, "no-op writes nothing");
+    assert!(
+        !dir.join("pool.json.bak").exists(),
+        "no-op backs up nothing"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn remove_min_dist_force_removes_evaluated_designs() {
+    let dir = temp_dir("remove-min-dist-force");
+    let file = dir.join("pool.json");
+    fs::write(&file, remove_force_pool()).unwrap();
+
+    // without --force the close evaluated pair is protected
+    let (out, stdout) = run(&dir, &["remove", "--min-dist=0.01", "pool.json"]);
+    assert!(out.status.success());
+    assert_eq!(
+        stdout.trim_end(),
+        "removed 0 designs (neighbor threshold 0.010000, 3 kept, 2 results)",
+        "unexpected summary: {stdout}"
+    );
+    assert!(
+        !dir.join("pool.json.bak").exists(),
+        "the no-op wrote nothing"
+    );
+
+    // with --force the more redundant evaluated design goes together
+    // with its results entry
+    let (out, stdout) = run(&dir, &["remove", "--min-dist=0.01", "--force", "pool.json"]);
+    assert!(out.status.success());
+    assert_eq!(
+        stdout.trim_end(),
+        "removed 1 designs (neighbor threshold 0.010000, 2 kept, 1 results)",
+        "unexpected summary: {stdout}"
+    );
+    let root: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    let names: Vec<&str> = root["designs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["0.1", "0.3"], "0.2 is closer to 0.3: redundant");
+    assert_eq!(root["results"].as_array().unwrap().len(), 1);
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn remove_min_dist_json_reports_the_threshold() {
+    let dir = temp_dir("remove-min-dist-json");
+    let file = dir.join("pool.json");
+    fs::write(&file, remove_pool()).unwrap();
+
+    let (out, stdout) = run(&dir, &["remove", "--json", "--min-dist=0.01", "pool.json"]);
+    assert!(out.status.success());
+    assert_eq!(stdout.lines().count(), 1, "stdout: {stdout}");
+    let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
+    let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "designs_after",
+            "designs_before",
+            "file",
+            "mode",
+            "results_after",
+            "results_before",
+            "subcommand",
+            "threshold"
+        ],
+        "the min-dist mode adds the threshold key"
+    );
+    assert_eq!(v["subcommand"], "remove");
+    assert_eq!(v["mode"], "min-dist");
+    assert_eq!(v["threshold"], 0.01);
+    assert_eq!(v["designs_before"], 5);
+    assert_eq!(v["designs_after"], 3);
+    assert_eq!(v["results_before"], 1);
+    assert_eq!(v["results_after"], 1);
+    assert!(dir.join("pool.json.bak").exists());
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn remove_missing_file_exits_2() {
+    let dir = temp_dir("remove-io");
+    let (out, _) = run(&dir, &["remove", "does-not-exist.json", "0.1"]);
+    assert_eq!(out.status.code(), Some(2));
+    let (out, _) = run(&dir, &["remove", "--min-dist", "does-not-exist.json"]);
+    assert_eq!(out.status.code(), Some(2));
+    fs::remove_dir_all(&dir).ok();
+}

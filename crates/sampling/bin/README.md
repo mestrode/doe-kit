@@ -16,6 +16,7 @@ Currently available subcommands:
 | `plhs` | pooled Latin Hypercube Sampling (the `plhs` crate) |
 | `stats` | statistical analysis of the pool: input definitions, sampling points, evaluated results and their correlations (the `doe-stats` crate) |
 | `reset` | remove designs from the pool: the unevaluated ones (default) or all of them (`--force`) |
+| `remove` | remove individual designs by name, or redundant close neighbors (`--min-dist`, threshold optional) |
 | `polish` | refine the pool's unevaluated designs in place (deterministic swap descent under the combined objective; evaluated designs are fixed context) |
 
 ## Creating a new pool: `sampling init`
@@ -56,6 +57,53 @@ The human summary is `removed N designs (K kept, M results)` or, with
 carries `subcommand`, `mode` (`unevaluated`/`all`), `file`,
 `designs_before`, `designs_after`, `results_before` and
 `results_after`.
+
+## Removing individual designs: `sampling remove`
+
+```sh
+sampling remove designs.json 0.4 0.5       # named mode: remove by name
+sampling remove --force designs.json 0.1    # also remove evaluated designs
+sampling remove --min-dist designs.json    # min-dist mode, default threshold
+sampling remove --min-dist=0.01 designs.json  # ...or an explicit threshold
+```
+
+Two mutually exclusive modes — names plus `--min-dist` is a validation
+error, and giving neither is a usage error.
+
+Named mode removes the named designs, all-or-nothing: an unknown name
+is a validation error that lists every unknown name and removes
+nothing. A design with a `results` entry requires `--force` — without
+it, the error lists every offending name and removes nothing. With
+`--force`, the design is removed together with its results entry (an
+orphaned entry would invalidate the pool).
+
+Min-dist mode thins close neighbors: two designs whose distance is
+below the threshold are a pair, and one of them is removed. Distances
+are Euclidean in the unit cube (every parameter linearly scaled to
+`[0, 1]` of its definition range — the normalization of the stats
+metrics). The threshold is the given `N` or, without a value, 10% of
+the pool's mean nearest-neighbor distance; because the value is
+optional, it attaches with `=` (`--min-dist=0.01`). The threshold is
+frozen at the start of the run. One design is removed per iteration,
+always from the globally closest actionable pair, so every removal is
+decided against the new situation; a clump of mutually close designs
+can thin down to a single design. The victim of a pair mixing an
+evaluated and an unevaluated design is always the unevaluated one;
+between same-status designs, the one with the smaller
+nearest-other-design distance is the more redundant and goes (ties by
+the lexicographically first name). Evaluated designs are protected
+without `--force`; with it, they can also be victims and their
+results entries go with them.
+
+A no-op removes nothing, writes nothing (no rewrite, no backup) and
+succeeds. The human summary is `removed N designs (K kept, M results)`
+(named mode) or `removed N designs (neighbor threshold T, K kept, M
+results)` (min-dist mode). The `--json` object carries `subcommand`,
+`mode` (`named`/`min-dist`), `file`, `designs_before`, `designs_after`,
+`results_before` and `results_after`; the min-dist mode adds the
+effective absolute `threshold` (omitted in named mode). There is no
+list of removed design names — the names are the input, and the
+`<input>.bak` backup shows the difference.
 
 ## Refining a pool: `sampling polish`
 
@@ -161,8 +209,8 @@ subcommand or unknown subcommand: usage error).
 
 ## Machine-readable output: `--json`
 
-Both `plhs` and `stats` accept `--json`; `reset` and `polish` do too
-(see their sections above). Instead of the human summary or
+Both `plhs` and `stats` accept `--json`; `reset`, `remove` and
+`polish` do too (see their sections above). Instead of the human summary or
 report, they print exactly one line of JSON on stdout and suppress all
 human output. Errors stay human on stderr with the usual exit codes; the
 pool is written and backed up exactly as without the flag.
