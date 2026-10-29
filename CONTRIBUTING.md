@@ -96,6 +96,17 @@ cadence; publication to crates.io is manual and per crate.
   flags `--json`/`--verbose`/`--html`, exit codes 0 success / 1
   validation error / 2 usage or I/O error, unknown subcommand is a
   usage error. Keep these stable.
+- The sampling section's pair statistics carry the population
+  (biased) distance correlation per parameter pair — the standard
+  dCor of Székely et al. (O(n²) per pair). Its n/a rules mirror
+  pearson/spearman: undefined below 3 designs or without variance in
+  either series (zero-variance parameters report n/a, not 0); the
+  compact pool line gains `max dCor` (n/a when no pair is defined),
+  the verbose pair lines gain `dCor`, the JSON pool object carries
+  `max_dcor` in both tiers and each verbose pair entry `dcor`. dCor
+  detects zero-correlation dependence (an X-shaped pair scatter
+  reads ~0 on pearson and spearman while being perfectly dependent).
+  Keep these stable.
 - The input section is two-tier for Gaussian parameters: the compact
   tier warns when the untruncated mass outside the scope exceeds 10%
   (strictly above; the scope is the sampling interval), `--verbose`

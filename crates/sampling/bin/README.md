@@ -257,9 +257,11 @@ evaluated count and the context number of designs per parameter:
    sampling point; zero means every section of every range is
    populated.
 5. The pair summary: the number of parameter pairs and the maximum
-   absolute Pearson and Spearman correlation over all pairs (n/a below
-   3 designs or without variance) — one line telling whether any
-   parameter pair moves together.
+   absolute Pearson and Spearman correlation plus the maximum
+   distance correlation (dCor) over all pairs (n/a below 3 designs or
+   without variance) — one line telling whether any parameter pair
+   moves together, and whether a pair depends on each other beyond
+   what the correlations can see.
 
 `--verbose` adds the detail behind those summaries:
 
@@ -269,8 +271,12 @@ evaluated count and the context number of designs per parameter:
    of the definition range — how uniformly the range is covered — plus
    the outer deciles (points in the first + last decile), telling
    whether the range edges are populated.
-3. Per parameter pair: Pearson and Spearman correlation between the
-   parameter values (n/a below 3 designs or without variance).
+3. Per parameter pair: the Pearson and Spearman correlation and the
+   population distance correlation dCor between the parameter values
+   (n/a below 3 designs or without variance). dCor detects
+   zero-correlation dependence: an X-shaped pair scatter reads ~0 on
+   both correlations while being perfectly dependent, and dCor sees
+   the dependence.
 
 Statistics of the evaluated `results` (reported only when `results`
 exist). Per numeric result variable (any numeric field on a result

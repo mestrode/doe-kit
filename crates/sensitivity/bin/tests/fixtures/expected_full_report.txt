@@ -10,7 +10,7 @@ sampling points:
   discrepancy (CL2): 0.344545
   pooled pair r2: 0.981744
   empty decile slots: 12 of 20
-  pairs: 1, max |pearson| 0.990830, max |spearman| 1.000000
+  pairs: 1, max |pearson| 0.990830, max |spearman| 1.000000, max dCor 0.978181
 outputs:
 a: n=4, min 1.000000, max 4.000000, mean 2.500000, median 2.500000, std 1.290994, min at 1.1, max at 1.4
   max |pearson| 0.998274 (x), max |spearman| 1.000000 (x), max eta2 1.000000 (x)

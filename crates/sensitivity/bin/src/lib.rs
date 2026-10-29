@@ -166,20 +166,21 @@ pub fn human_sampling(pool: &PoolStats, evaluated: usize, verbose: bool) -> Stri
         parameters * DECILES
     ));
     out.push_str(&format!(
-        "  pairs: {}, max |pearson| {}, max |spearman| {}\n",
+        "  pairs: {}, max |pearson| {}, max |spearman| {}, max dCor {}\n",
         pool.pairs.len(),
         max_of(pool.max_abs_pearson),
-        max_of(pool.max_abs_spearman)
+        max_of(pool.max_abs_spearman),
+        max_of(pool.max_dcor)
     ));
     if verbose {
         for pair in &pool.pairs {
-            match (pair.pearson, pair.spearman) {
-                (Some(pe), Some(se)) => out.push_str(&format!(
-                    "  {} vs {}: pearson {pe:.6}, spearman {se:.6}\n",
+            match (pair.pearson, pair.spearman, pair.dcor) {
+                (Some(pe), Some(se), Some(dc)) => out.push_str(&format!(
+                    "  {} vs {}: pearson {pe:.6}, spearman {se:.6}, dCor {dc:.6}\n",
                     pair.a, pair.b
                 )),
                 _ => out.push_str(&format!(
-                    "  {} vs {}: pearson n/a, spearman n/a (n < 3 or no variance)\n",
+                    "  {} vs {}: pearson n/a, spearman n/a, dCor n/a (n < 3 or no variance)\n",
                     pair.a, pair.b
                 )),
             }
