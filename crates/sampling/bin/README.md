@@ -16,6 +16,7 @@ Currently available subcommands:
 | `plhs` | pooled Latin Hypercube Sampling (the `plhs` crate) |
 | `stats` | statistical analysis of the pool: input definitions, sampling points, evaluated results and their correlations (the `doe-stats` crate) |
 | `reset` | remove designs from the pool: the unevaluated ones (default) or all of them (`--all`) |
+| `polish` | refine the pool's unevaluated designs in place (deterministic swap descent under the combined objective; evaluated designs are fixed context) |
 
 ## Creating a new pool: `sampling init`
 
@@ -55,6 +56,45 @@ The human summary is `removed N designs (K kept, M results)` or, with
 carries `subcommand`, `mode` (`unevaluated`/`all`), `file`,
 `designs_before`, `designs_after`, `results_before` and
 `results_after`.
+
+## Refining a pool: `sampling polish`
+
+```sh
+sampling polish designs.json
+```
+
+`polish` refines the pool's unevaluated designs in place: the same
+deterministic swap descent that runs after `plhs` placement (`--no-polish`
+skips it there), applied standalone to the designs that have no entry in
+`results`. Evaluated designs are fixed context — they anchor the
+correlation structure and their values never move — and are counted in
+the summary. Every swap exchanges two values within one parameter
+column, so each parameter's value multiset is preserved exactly: no
+design escapes its parameter ranges, the pool stays an LHS in the
+per-column sense, and only the pairing changes.
+
+The refinement runs on the full definition ranges (`Parameter::full_surface`,
+like `--explore`): scopes and distributions are ignored, every parameter
+is normalized to the unit cube of its definition range. The reported
+`r2` is therefore exactly the pooled pair r2 that `stats` (and
+`doe-stats sampling`) computes on the polished pool — the definition-range
+normalization the statistics use is the one being optimized.
+
+A run that cannot improve anything is a success without side effects:
+fewer than two movable designs or two parameters, or no improving swap,
+reports `polished N designs, r2 X -> X, AE A -> A (0 moves)` and writes
+nothing — no rewrite, no backup. Otherwise the refined pool is written
+back atomically with the usual `<input>.bak` backup (`--no-backup`
+skips it). Because the descent has two phases (correlation first, then
+space-filling within the τ guard), a finished pass can leave room for
+another: running `polish` again continues descending and is also safe;
+the no-op arrives at the fixed point.
+
+The human summary is `polished N designs, r2 X -> Y, AE A -> B (K moves)`
+where N counts the movable (unevaluated) designs and K the total swaps of
+both phases. The `--json` object carries `subcommand`, `file`, `designs`
+(movable), `evaluated_skipped` (fixed context count), `moves`, `r2_before`,
+`r2_after`, `ae_before`, `ae_after` and `elapsed_ms`.
 
 ## Usage
 
@@ -121,8 +161,8 @@ subcommand or unknown subcommand: usage error).
 
 ## Machine-readable output: `--json`
 
-Both `plhs` and `stats` accept `--json`; `reset` does too (see its
-section above). Instead of the human summary or
+Both `plhs` and `stats` accept `--json`; `reset` and `polish` do too
+(see their sections above). Instead of the human summary or
 report, they print exactly one line of JSON on stdout and suppress all
 human output. Errors stay human on stderr with the usual exit codes; the
 pool is written and backed up exactly as without the flag.

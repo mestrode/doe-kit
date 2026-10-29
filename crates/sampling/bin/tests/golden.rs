@@ -137,3 +137,33 @@ fn golden_init_output_is_reproduced_by_the_binary() {
     );
     fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn golden_polish_output_is_reproduced_by_the_binary() {
+    let dir = std::env::temp_dir().join(format!("sampling-golden-polish-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("designs.json");
+    fs::write(&file, fs::read("tests/fixtures/polish_input.json").unwrap()).unwrap();
+
+    let out = Command::new(BIN)
+        .args(["polish", "designs.json"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // byte-for-byte pool: the refined values of the unevaluated designs
+    let produced = fs::read_to_string(&file).unwrap();
+    let expected = fs::read_to_string("tests/fixtures/expected_polish.json").unwrap();
+    assert_eq!(
+        produced, expected,
+        "golden polish output differs; if the algorithm changed intentionally, \
+         regenerate tests/fixtures/expected_polish.json with the sampling binary"
+    );
+    fs::remove_dir_all(&dir).ok();
+}

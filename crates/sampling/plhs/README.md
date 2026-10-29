@@ -141,6 +141,14 @@ all existing designs take part in the binning (every value lies inside the
 definition range by definition). The result is a uniform, low-correlation
 enhancement of the whole surface instead of a specific section.
 
+`polish_pool()` exposes the refinement pass standalone for whole-pool
+polishing (the `sampling polish` subcommand): it maps the pool through
+the same `full_surface` view — every parameter on its definition range,
+the normalization the statistics use — and marks which designs are
+movable. The unevaluated designs descend under the combined objective
+with the evaluated ones as fixed context; the pass, its budgets and
+its τ-guard ladder are exactly the ones described above.
+
 ## Determinism
 
 Candidate values are drawn from a ChaCha8 RNG seeded with an explicit
