@@ -1318,7 +1318,7 @@ fn sorted_columns(file: &std::path::Path, params: &[&str]) -> Vec<Vec<f64>> {
 
 #[test]
 fn polish_refines_a_pool_writes_and_backs_up() {
-    let dir = temp_dir("polish");
+    let dir = temp_dir("polish-pool");
     let file = dir.join("designs.json");
     fs::write(&file, polish_pool_json(10, false)).unwrap();
     let original = fs::read(&file).unwrap();
