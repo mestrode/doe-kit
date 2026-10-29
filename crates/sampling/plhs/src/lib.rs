@@ -574,6 +574,139 @@ pub fn explore(
     augment(&full, designs, m, seed, cap, polish)
 }
 
+/// Refines the values of a pool's movable designs in place (issue #48):
+/// the standalone form of the polish pass, applicable to any pool,
+/// plhs-generated or not.
+///
+/// `movable` is parallel to `designs`; a design marked `false` is fixed
+/// context and never swapped — for the `sampling polish` subcommand
+/// those are the evaluated designs, whose coordinates are bound to
+/// simulation outputs. Every swap exchanges the values of two movable
+/// designs within one parameter, so each parameter's value multiset —
+/// and with it every marginal and distribution — is structurally
+/// preserved: the pass refines the arrangement of the values, never the
+/// values' pool.
+///
+/// Like [`explore`], the pass treats every parameter as uniform over its
+/// full definition range, ignoring scopes and distributions: scopes are
+/// placement directives of [`augment`], while this pass refines the pool
+/// on the definition-range unit cube — the same normalization the
+/// `doe-stats` sampling metrics use. The reported `score_before` /
+/// `score_after` are therefore the pooled pair r² the stats report
+/// computes on the pool, and the space-filling phase descends the same
+/// point set the pairwise-distance metrics measure.
+///
+/// The two phases and budgets are those of the in-run pass (see
+/// [`polish`](mod@crate::polish)): a pooled pair r² descent, then the
+/// Audze–Eglais descent under the τ-floor ladder. A pool with fewer
+/// than two parameters (no pairs to score) or fewer than two movable
+/// designs (nothing to swap) is a no-op: the report stands at zero
+/// moves with identical before/after values. No randomness anywhere —
+/// the same pool polishes to the same result.
+///
+/// # Errors
+///
+/// Returns an [`Error`] when `movable` is not parallel to `designs`, or
+/// when a design carries no value for a declared parameter.
+pub fn polish_pool(
+    params: &[Parameter],
+    designs: &mut [Design],
+    movable: &[bool],
+) -> Result<PolishReport> {
+    if movable.len() != designs.len() {
+        return Err(Error::Invalid(format!(
+            "movable mask has {} entries for {} designs",
+            movable.len(),
+            designs.len()
+        )));
+    }
+    // Full-surface view of the parameters: the pass refines on the
+    // definition-range unit cube regardless of scopes/distributions.
+    let full: Vec<Parameter> = params.iter().map(Parameter::full_surface).collect();
+    let p = full.len();
+    for design in designs.iter() {
+        if design.values.len() != p {
+            return Err(Error::Design {
+                name: design.name.clone(),
+                reason: format!(
+                    "expected {p} parameter value(s), found {}",
+                    design.values.len()
+                ),
+            });
+        }
+    }
+
+    // Fixed context: the pair series of the fixed designs and their
+    // unit-cube rows. Under the full-surface view every value is in
+    // scope, so a series simply holds every fixed design — pairs with
+    // one or two fixed designs are not degenerate here, because the
+    // movable designs complete the series (unlike augment, which
+    // places nothing into an existing pool it must validate).
+    let mut pairs: Vec<PairSeries> = Vec::with_capacity(p * (p - 1) / 2);
+    for a in 0..p {
+        for b in (a + 1)..p {
+            let (mut xs, mut ys) = (Vec::new(), Vec::new());
+            for (design, &is_movable) in designs.iter().zip(movable) {
+                if !is_movable {
+                    xs.push(full[a].transform(design.values[a]));
+                    ys.push(full[b].transform(design.values[b]));
+                }
+            }
+            pairs.push(PairSeries { a, b, xs, ys });
+        }
+    }
+    let base_points: Vec<Vec<f64>> = designs
+        .iter()
+        .zip(movable)
+        .filter(|&(_, &is_movable)| !is_movable)
+        .map(|(design, _)| {
+            (0..p)
+                .map(|j| full[j].transform(design.values[j]))
+                .collect()
+        })
+        .collect();
+
+    // The movable rows: scope-transformed values for the descent, real
+    // values as the mirror the pass swaps in lockstep.
+    let indices: Vec<usize> = (0..designs.len()).filter(|&i| movable[i]).collect();
+    let m = indices.len();
+    let mut placed_t: Vec<Vec<f64>> = (0..p)
+        .map(|j| {
+            indices
+                .iter()
+                .map(|&i| full[j].transform(designs[i].values[j]))
+                .collect()
+        })
+        .collect();
+    let mut mirror: Vec<Vec<f64>> = (0..p)
+        .map(|j| indices.iter().map(|&i| designs[i].values[j]).collect())
+        .collect();
+
+    let report = if p < 2 || m < 2 {
+        // no pairs to score or nothing to swap: the pool stands as-is
+        let score = assignment_score(&pairs, &placed_t, m);
+        let ae = space::ae_energy(&polish::active_rows(&base_points, &placed_t));
+        PolishReport {
+            moves: 0,
+            ae_moves: 0,
+            score_before: score,
+            score_after: score,
+            ae_before: ae,
+            ae_after: ae,
+        }
+    } else {
+        polish::polish(&pairs, &base_points, &mut placed_t, &mut mirror)
+    };
+
+    // Write the mirror (real values) back into the movable designs.
+    for (j, column) in mirror.iter().enumerate() {
+        for (slot, &i) in indices.iter().enumerate() {
+            designs[i].values[j] = column[slot];
+        }
+    }
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1171,5 +1304,161 @@ mod tests {
         let b = explore(&params, &designs, 3, 7, 1_000_000, false).unwrap();
         assert_eq!(a.new_designs, b.new_designs);
         assert_eq!(a.score, b.score);
+    }
+
+    // -- polish_pool (issue #48) ------------------------------------------
+
+    /// Column `j` of the designs, sorted: the per-parameter value
+    /// multiset, which every swap preserves structurally.
+    fn sorted_column(designs: &[Design], j: usize) -> Vec<f64> {
+        let mut v: Vec<f64> = designs.iter().map(|d| d.values[j]).collect();
+        v.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        v
+    }
+
+    fn anti_correlated_pool(m: usize) -> Vec<Design> {
+        (0..m)
+            .map(|i| Design {
+                name: format!("1.{}", i + 1),
+                // a perfect anti-diagonal: pooled r2 = 1, the pattern a
+                // correlation-blind reading would call "structured" and
+                // the descent scatters
+                values: vec![
+                    (i as f64 + 0.5) * (10.0 / m as f64),
+                    (m as f64 - 0.5 - i as f64) * (10.0 / m as f64),
+                ],
+            })
+            .collect()
+    }
+
+    #[test]
+    fn polish_pool_refines_a_correlated_pool_preserving_multisets() {
+        let params = vec![
+            Parameter::uniform("x", 0.0, 10.0).unwrap(),
+            Parameter::uniform("y", 0.0, 10.0).unwrap(),
+        ];
+        let mut designs = anti_correlated_pool(8);
+        let multisets: Vec<Vec<f64>> = (0..2).map(|j| sorted_column(&designs, j)).collect();
+        let movable = vec![true; 8];
+
+        let report = polish_pool(&params, &mut designs, &movable).unwrap();
+
+        assert!(
+            report.score_after < report.score_before,
+            "pooled r2 must drop: {} -> {}",
+            report.score_before,
+            report.score_after
+        );
+        assert!(report.moves + report.ae_moves > 0);
+        for (j, multiset) in multisets.iter().enumerate() {
+            assert_eq!(
+                &sorted_column(&designs, j),
+                multiset,
+                "multiset of parameter {j} must survive the pass"
+            );
+        }
+    }
+
+    #[test]
+    fn polish_pool_keeps_fixed_designs_and_ignores_scopes() {
+        // the fixed design sits OUTSIDE the scope and must still be
+        // untouched: the pass refines on the definition-range unit
+        // cube (the normalization doe-stats measures on), so scopes
+        // — placement directives of augment — do not restrict it
+        let params = vec![
+            Parameter::uniform("x", 0.0, 10.0)
+                .unwrap()
+                .with_scope(2.0, 8.0)
+                .unwrap(),
+            Parameter::uniform("y", 0.0, 10.0).unwrap(),
+        ];
+        let mut designs = anti_correlated_pool(6);
+        designs.insert(
+            0,
+            Design {
+                name: "0.1".into(),
+                values: vec![9.5, 0.4],
+            },
+        );
+        let movable = {
+            let mut m = vec![true; designs.len()];
+            m[0] = false;
+            m
+        };
+
+        let report = polish_pool(&params, &mut designs, &movable).unwrap();
+
+        assert_eq!(designs[0].values, vec![9.5, 0.4]);
+        assert!(
+            report.score_after < report.score_before,
+            "movable designs must still be refined"
+        );
+    }
+
+    #[test]
+    fn polish_pool_is_a_noop_below_two_movable_designs_or_two_params() {
+        let two = vec![
+            Parameter::uniform("x", 0.0, 10.0).unwrap(),
+            Parameter::uniform("y", 0.0, 10.0).unwrap(),
+        ];
+        // one movable design: nothing can swap
+        let mut single = vec![Design {
+            name: "1.1".into(),
+            values: vec![3.0, 7.0],
+        }];
+        let report = polish_pool(&two, &mut single, &[true]).unwrap();
+        assert_eq!(report.moves + report.ae_moves, 0);
+        assert_eq!(report.score_before, report.score_after);
+        assert_eq!(single[0].values, vec![3.0, 7.0]);
+
+        // one parameter: no pairs, and no AE descent either (the pass
+        // is a no-op without a pair to score)
+        let one = vec![Parameter::uniform("x", 0.0, 10.0).unwrap()];
+        let mut rows: Vec<Design> = (0..4)
+            .map(|i| Design {
+                name: format!("1.{}", i + 1),
+                values: vec![1.0 + i as f64 * 2.0],
+            })
+            .collect();
+        let report = polish_pool(&one, &mut rows, &[true; 4]).unwrap();
+        assert_eq!(report.moves + report.ae_moves, 0);
+        assert_eq!(report.score_before, report.score_after);
+        for (i, design) in rows.iter().enumerate() {
+            assert_eq!(design.values, vec![1.0 + i as f64 * 2.0]);
+        }
+    }
+
+    #[test]
+    fn polish_pool_is_deterministic() {
+        let params = vec![
+            Parameter::uniform("x", 0.0, 10.0).unwrap(),
+            Parameter::uniform("y", 0.0, 10.0).unwrap(),
+        ];
+        let movable = vec![true; 8];
+        let mut a = anti_correlated_pool(8);
+        let mut b = a.clone();
+        let ra = polish_pool(&params, &mut a, &movable).unwrap();
+        let rb = polish_pool(&params, &mut b, &movable).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(ra, rb);
+    }
+
+    #[test]
+    fn polish_pool_validates_its_input() {
+        let params = vec![
+            Parameter::uniform("x", 0.0, 10.0).unwrap(),
+            Parameter::uniform("y", 0.0, 10.0).unwrap(),
+        ];
+        let mut designs = anti_correlated_pool(4);
+        // the mask must be parallel to the designs
+        let err = polish_pool(&params, &mut designs, &[true; 3]).unwrap_err();
+        assert!(err.to_string().contains("movable mask"));
+        // every design must carry a value per parameter
+        let mut short = vec![Design {
+            name: "1.1".into(),
+            values: vec![5.0],
+        }];
+        let err = polish_pool(&params, &mut short, &[true]).unwrap_err();
+        assert!(err.to_string().contains("1.1"));
     }
 }

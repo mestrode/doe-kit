@@ -425,6 +425,46 @@ pub fn append_results(root: &mut Value, params: &[Parameter], results: &[Results
     Ok(())
 }
 
+/// Updates the parameter values of the named designs in place (the
+/// `sampling polish` subcommand writes its refined values back through
+/// this). Every updated design must exist in the pool; only the
+/// per-parameter value fields change — names, other designs, `results`
+/// and unknown fields are untouched, and the key order is preserved.
+pub fn update_design_values(
+    root: &mut Value,
+    params: &[Parameter],
+    updated: &[Design],
+) -> Result<()> {
+    let designs_not_array = || invalid("'designs' must be an array");
+    let root_obj = root
+        .as_object_mut()
+        .ok_or_else(|| invalid("root must be a JSON object"))?;
+    let designs = root_obj
+        .get_mut("designs")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(designs_not_array)?;
+    for design in updated {
+        let entry = designs
+            .iter_mut()
+            .find(|d| d.get("name").and_then(Value::as_str) == Some(design.name.as_str()))
+            .ok_or_else(|| Error::Design {
+                name: design.name.clone(),
+                reason: "does not match any design in the pool".to_owned(),
+            })?;
+        let obj = entry
+            .as_object_mut()
+            .ok_or_else(|| invalid("design must be an object"))?;
+        for (param, value) in params.iter().zip(&design.values) {
+            let n = Number::from_f64(*value).ok_or_else(|| Error::Design {
+                name: design.name.clone(),
+                reason: format!("non-finite value for parameter '{}'", param.name),
+            })?;
+            obj.insert(param.name.clone(), Value::Number(n));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,5 +603,81 @@ mod tests {
         assert_eq!(report.results_before, 0);
         assert!(root["designs"].as_array().unwrap().is_empty());
         assert!(root.get("results").is_none(), "no results key is created");
+    }
+
+    #[test]
+    fn update_design_values_rewrites_only_the_named_designs() {
+        let mut root = serde_json::json!({
+            "params": [
+                { "name": "a", "min": 0, "max": 10 },
+                { "name": "b", "min": 0, "max": 10 }
+            ],
+            "designs": [
+                { "name": "1.1", "a": 2.0, "b": 8.0, "note": "kept" },
+                { "name": "1.2", "a": 3.0, "b": 7.0 }
+            ],
+            "results": [{ "name": "1.2", "linear": 1.0 }],
+            "note": "unknown fields must survive"
+        });
+        let params = parse_params(&root).unwrap();
+        update_design_values(
+            &mut root,
+            &params,
+            &[Design {
+                name: "1.1".to_owned(),
+                values: vec![4.5, 5.5],
+            }],
+        )
+        .unwrap();
+        assert_eq!(root["designs"][0]["a"], 4.5);
+        assert_eq!(root["designs"][0]["b"], 5.5);
+        assert_eq!(root["designs"][0]["note"], "kept");
+        assert_eq!(root["designs"][0]["name"], "1.1");
+        // the other design and everything else pass through untouched
+        assert_eq!(root["designs"][1]["a"], 3.0);
+        assert_eq!(root["designs"][1]["b"], 7.0);
+        assert_eq!(root["results"].as_array().unwrap().len(), 1);
+        assert_eq!(root["note"], "unknown fields must survive");
+    }
+
+    #[test]
+    fn update_design_values_refuses_a_name_matching_no_design() {
+        let mut root = pool();
+        let params = parse_params(&root).unwrap();
+        let err = update_design_values(
+            &mut root,
+            &params,
+            &[Design {
+                name: "9.9".to_owned(),
+                values: vec![1.0],
+            }],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("9.9"), "{err}");
+        assert!(err.to_string().contains("does not match"), "{err}");
+    }
+
+    #[test]
+    fn update_design_values_preserves_key_order() {
+        let mut root = serde_json::json!({
+            "params": [{ "name": "a", "min": 0, "max": 10 }],
+            "designs": [{ "name": "1.1", "a": 2.0 }]
+        });
+        let params = parse_params(&root).unwrap();
+        update_design_values(
+            &mut root,
+            &params,
+            &[Design {
+                name: "1.1".to_owned(),
+                values: vec![6.0],
+            }],
+        )
+        .unwrap();
+        // serialized form keeps name before the value fields
+        let text = root.to_string();
+        assert_eq!(
+            text,
+            r#"{"params":[{"name":"a","min":0,"max":10}],"designs":[{"name":"1.1","a":6.0}]}"#
+        );
     }
 }

@@ -1259,3 +1259,221 @@ fn reset_json_emits_one_machine_readable_line() {
     assert_eq!(v["results_after"], 0);
     fs::remove_dir_all(&dir).ok();
 }
+
+// -- polish (issue #48) ---------------------------------------------------
+
+/// A small anti-correlated pool: two uniform parameters, `m` designs on
+/// a perfect anti-diagonal (pooled pair r2 = 1.0), optionally with a
+/// results entry marking the first design as evaluated.
+fn polish_pool_json(m: usize, results: bool) -> String {
+    let mut designs = String::new();
+    for i in 0..m {
+        let (x, y) = (
+            (i as f64 + 0.5) * (10.0 / m as f64),
+            (m as f64 - 0.5 - i as f64) * (10.0 / m as f64),
+        );
+        designs.push_str(&format!(
+            r#"    {{ "name": "1.{}", "x": {x}, "y": {y} }}{sep}"#,
+            i + 1,
+            sep = if i + 1 < m { "," } else { "" }
+        ));
+    }
+    let results = if results {
+        r#", "results": [{ "name": "1.1", "linear": 0.5 }]"#
+    } else {
+        ""
+    };
+    format!(
+        r#"{{
+    "params": [
+        {{ "name": "x", "min": 0, "max": 10 }},
+        {{ "name": "y", "min": 0, "max": 10 }}
+    ],
+    "designs": [
+{designs}
+    ],
+    "note": "unknown fields must survive"{results}
+}}"#
+    )
+}
+
+/// Sorted per-parameter values of the pool: the multiset every swap
+/// preserves structurally.
+fn sorted_columns(file: &std::path::Path, params: &[&str]) -> Vec<Vec<f64>> {
+    let root: Value = serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
+    params
+        .iter()
+        .map(|p| {
+            let mut v: Vec<f64> = root["designs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| d[p].as_f64().unwrap())
+                .collect();
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v
+        })
+        .collect()
+}
+
+#[test]
+fn polish_refines_a_pool_writes_and_backs_up() {
+    let dir = temp_dir("polish");
+    let file = dir.join("designs.json");
+    fs::write(&file, polish_pool_json(10, false)).unwrap();
+    let original = fs::read(&file).unwrap();
+    let multisets = sorted_columns(&file, &["x", "y"]);
+
+    let (out, stdout) = run(&dir, &["polish", "designs.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.starts_with("polished 10 designs, r2 1.000000 -> "),
+        "unexpected summary: {stdout}"
+    );
+    assert!(stdout.contains("moves"), "summary: {stdout}");
+
+    // backup equals the pre-polish input
+    assert_eq!(fs::read(dir.join("designs.json.bak")).unwrap(), original);
+    // every swap preserves the per-parameter value multisets
+    assert_eq!(sorted_columns(&file, &["x", "y"]), multisets);
+    // unknown fields survive
+    let root: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(root["note"], "unknown fields must survive");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn polish_json_reports_the_keys_and_the_stats_objective() {
+    let dir = temp_dir("polish-json");
+    let file = dir.join("designs.json");
+    fs::write(&file, polish_pool_json(10, false)).unwrap();
+
+    let (out, stdout) = run(&dir, &["polish", "--json", "designs.json"]);
+    assert!(out.status.success());
+    assert_eq!(stdout.lines().count(), 1, "stdout: {stdout}");
+    let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
+    // the exact key set of the issue contract
+    let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "ae_after",
+            "ae_before",
+            "designs",
+            "elapsed_ms",
+            "evaluated_skipped",
+            "file",
+            "movable",
+            "moves",
+            "r2_after",
+            "r2_before",
+            "subcommand",
+        ]
+    );
+    assert_eq!(v["subcommand"], "polish");
+    assert_eq!(v["file"], "designs.json");
+    assert_eq!(v["designs"], 10);
+    assert_eq!(v["movable"], 10);
+    assert_eq!(v["evaluated_skipped"], 0);
+    assert!(v["moves"].as_u64().unwrap() > 0);
+    let before = v["r2_before"].as_f64().unwrap();
+    let after = v["r2_after"].as_f64().unwrap();
+    assert!(
+        (before - 1.0).abs() < 1e-9,
+        "anti-diagonal starts at r2 1: {before}"
+    );
+    assert!(after < 0.1, "the descent must scatter the pairs: {after}");
+
+    // the full-surface contract: r2_after is the pooled pair r2 the
+    // doe-stats sampling report computes on the polished pool (Pearson
+    // is invariant under the per-parameter affine normalization)
+    let root: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    let designs = root["designs"].as_array().unwrap();
+    let column = |p: &str| -> Vec<f64> { designs.iter().map(|d| d[p].as_f64().unwrap()).collect() };
+    let (xs, ys) = (column("x"), column("y"));
+    let pooled = plhs::scoring::pearson(&xs, &ys).powi(2);
+    assert!(
+        (pooled - after).abs() < 1e-9,
+        "stats pooled r2 {pooled} != reported r2_after {after}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn polish_keeps_evaluated_designs_fixed() {
+    let dir = temp_dir("polish-fixed");
+    let file = dir.join("designs.json");
+    fs::write(&file, polish_pool_json(8, true)).unwrap();
+
+    let (out, stdout) = run(&dir, &["polish", "--json", "designs.json"]);
+    assert!(out.status.success(), "stderr: {stdout}");
+    let v: Value = serde_json::from_str(stdout.trim_end()).unwrap();
+    assert_eq!(v["designs"], 8);
+    assert_eq!(v["movable"], 7);
+    assert_eq!(v["evaluated_skipped"], 1);
+
+    // the evaluated design is fixed context: its values never move
+    let root: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    let evaluated = &root["designs"][0];
+    assert_eq!(evaluated["name"], "1.1");
+    assert_eq!(evaluated["x"], 0.625);
+    assert_eq!(evaluated["y"], 9.375);
+    // the results entry passes through untouched
+    assert_eq!(root["results"][0]["linear"], 0.5);
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn polish_noop_exits_zero_without_touching_the_file() {
+    let dir = temp_dir("polish-noop");
+    let file = dir.join("designs.json");
+    fs::write(&file, polish_pool_json(1, false)).unwrap();
+    let original = fs::read(&file).unwrap();
+
+    let (out, stdout) = run(&dir, &["polish", "designs.json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("(0 moves)"), "summary: {stdout}");
+    // nothing changed: no rewrite, no backup
+    assert_eq!(fs::read(&file).unwrap(), original);
+    assert!(!dir.join("designs.json.bak").exists());
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn polish_flags_and_exit_codes() {
+    let dir = temp_dir("polish-flags");
+    let file = dir.join("designs.json");
+    fs::write(&file, polish_pool_json(10, false)).unwrap();
+
+    // --no-backup refines without a backup
+    let (out, _) = run(&dir, &["polish", "--no-backup", "designs.json"]);
+    assert!(out.status.success());
+    assert!(!dir.join("designs.json.bak").exists());
+
+    // missing file: I/O error
+    let (out, _) = run(&dir, &["polish", "does-not-exist.json"]);
+    assert_eq!(out.status.code(), Some(2));
+
+    // structurally invalid pool: validation error
+    fs::write(
+        &file,
+        r#"{"params": [{"name": "x", "min": 0, "max": 10}], "designs": [{"name": "1.1"}]}"#,
+    )
+    .unwrap();
+    let (out, stderr) = run(&dir, &["polish", "designs.json"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).starts_with("error:"),
+        "stderr: {stderr}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}

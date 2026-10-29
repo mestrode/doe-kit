@@ -73,6 +73,17 @@ cadence; publication to crates.io is manual and per crate.
   state, parameters untouched, next iteration starts at 1). Removing
   nothing is a success (idempotent, exit 0). Exit codes: 0 success,
   1 validation error, 2 I/O error. Keep these stable.
+- The `sampling polish` CLI contract: `sampling polish file` with
+  options `--no-backup`, `--json`. It refines every design without a
+  results entry (evaluated designs are fixed context, their values
+  never move), swaps only within parameter columns (per-parameter
+  value multisets preserved), runs on the full definition ranges
+  (`full_surface` view, the `stats` normalization), and reports
+  `subcommand`, `file`, `designs` (movable), `evaluated_skipped`,
+  `moves`, `r2_before`, `r2_after`, `ae_before`, `ae_after`,
+  `elapsed_ms` under `--json`. A run with no improving swap writes
+  nothing (no rewrite, no backup, exit 0). Exit codes: 0 success,
+  1 validation error, 2 I/O error. Keep these stable.
 - `sampling stats` reports statistics only: it writes no files and makes
   no recommendations; the judgment stays with the user. Its report is
   the full `doe-stats` report: the sections run in order (input,

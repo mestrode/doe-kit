@@ -17,6 +17,18 @@
 //! to its initial state. The parameters are untouched and the next
 //! `plhs` run starts at iteration 1 again.
 //!
+//! `sampling polish` refines the pool's unevaluated designs in place:
+//! the deterministic swap descent of the combined objective (pooled pair
+//! r², then space-filling energy under the τ guards) applied to the pool
+//! as it stands — no seed, no scope, any pool. Evaluated designs (with a
+//! results entry) are fixed context; every swap preserves each
+//! parameter's value multiset, so the marginals and distributions are
+//! invariant. The pass refines on the definition-range unit cube, the
+//! same normalization the stats report measures: the reported r² is the
+//! pooled pair r² `doe-stats sampling` computes on the pool. A no-op
+//! (fewer than two movable designs or no parameter pairs) succeeds
+//! without touching the file.
+//!
 //! `sampling stats` analyzes the pool (read-only judgment support before
 //! expensive simulations are run): the full report of the `doe-stats`
 //! binary — the parameter definitions, then the statistics of the
@@ -77,6 +89,11 @@ enum Command {
     /// (default) or every design together with the results (--all)
     #[command(name = "reset")]
     Reset(ResetArgs),
+    /// Refine the pool's unevaluated designs in place (deterministic
+    /// swap descent under the combined objective; evaluated designs are
+    /// fixed context)
+    #[command(name = "polish")]
+    Polish(PolishArgs),
 }
 
 #[derive(Args)]
@@ -154,6 +171,19 @@ struct ResetArgs {
     json: bool,
 }
 
+#[derive(Args)]
+struct PolishArgs {
+    /// Input JSON file; also the output file.
+    file: PathBuf,
+    /// Skip writing the backup file.
+    #[arg(long)]
+    no_backup: bool,
+    /// Print one line of machine-readable JSON instead of the human
+    /// summary (for benchmarks and result collection).
+    #[arg(long)]
+    json: bool,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
@@ -161,6 +191,7 @@ fn main() -> ExitCode {
         Command::Plhs(args) => run(&args),
         Command::Stats(args) => run_stats(&args),
         Command::Reset(args) => run_reset(&args),
+        Command::Polish(args) => run_polish(&args),
     };
     match result {
         Ok(summary) => {
@@ -405,5 +436,69 @@ fn run_reset(args: &ResetArgs) -> Result<String, CliError> {
         report.designs_before - report.designs_after,
         report.designs_after,
         report.results_before
+    ))
+}
+
+/// Refines the pool's unevaluated designs in place: every design
+/// without a results entry (the same name-based predicate as
+/// `simio test` and `reset`) is movable, the evaluated designs are
+/// fixed context bound to their simulation outputs. Deterministic —
+/// no seed. The pool file is rewritten (with the `.bak` backup) only
+/// when the pass applied at least one swap; a no-op leaves the file
+/// untouched.
+fn run_polish(args: &PolishArgs) -> Result<String, CliError> {
+    let (bytes, mut root) = doe_pool::read(&args.file).map_err(pool)?;
+    let params = doe_pool::format::parse_params(&root).map_err(validation)?;
+    let mut designs = doe_pool::format::parse_designs(&root, &params).map_err(validation)?;
+    let results = doe_pool::format::parse_results(&root).map_err(validation)?;
+    let solved: std::collections::BTreeSet<&str> =
+        results.iter().map(|r| r.name.as_str()).collect();
+    let movable: Vec<bool> = designs
+        .iter()
+        .map(|d| !solved.contains(d.name.as_str()))
+        .collect();
+    let evaluated_skipped = movable.iter().filter(|&&m| !m).count();
+    let movable_count = designs.len() - evaluated_skipped;
+
+    let started = std::time::Instant::now();
+    let report = plhs::polish_pool(&params, &mut designs, &movable).map_err(validation)?;
+    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let moves = report.moves + report.ae_moves;
+
+    if moves > 0 {
+        if !args.no_backup {
+            doe_pool::backup(&args.file, &bytes).map_err(pool)?;
+        }
+        let refined: Vec<plhs::Design> = designs
+            .iter()
+            .zip(&movable)
+            .filter(|&(_, &is_movable)| is_movable)
+            .map(|(design, _)| design.clone())
+            .collect();
+        doe_pool::format::update_design_values(&mut root, &params, &refined).map_err(validation)?;
+        let out_bytes = doe_pool::serialize(&root).map_err(pool)?;
+        doe_pool::write_atomic(&args.file, &out_bytes).map_err(pool)?;
+    }
+
+    if args.json {
+        return Ok(serde_json::json!({
+            "subcommand": "polish",
+            "file": args.file.display().to_string(),
+            "designs": designs.len(),
+            "movable": movable_count,
+            "evaluated_skipped": evaluated_skipped,
+            "moves": moves,
+            "r2_before": report.score_before,
+            "r2_after": report.score_after,
+            "ae_before": report.ae_before,
+            "ae_after": report.ae_after,
+            "elapsed_ms": elapsed_ms,
+        })
+        .to_string());
+    }
+
+    Ok(format!(
+        "polished {movable_count} designs, r2 {:.6} -> {:.6}, AE {:.3} -> {:.3} ({moves} moves)",
+        report.score_before, report.score_after, report.ae_before, report.ae_after
     ))
 }
